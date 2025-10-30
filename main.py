@@ -73,15 +73,24 @@ class PipelineBase:
 
     async def fetch_html(self, url, wait_selector=None):
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.goto(url)
+            browser = await p.chromium.launch(headless=False)  # ← مرورگر باز باشه
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0 Safari/537.36"
+                )
+            )
+            page = await context.new_page()
+            await page.goto(url, timeout=120000)  # timeout 120 ثانیه
+
             if wait_selector:
                 try:
-                    await page.wait_for_selector(wait_selector, timeout=15000)
+                    await page.wait_for_selector(wait_selector, timeout=120000)
                 except:
                     print(f"⚠️ المنت {wait_selector} پیدا نشد.")
-            await asyncio.sleep(3)
+
+            await asyncio.sleep(5)
             html = await page.content()
             await browser.close()
             return html
@@ -100,8 +109,8 @@ class PipelineBase:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 origin_iata, origin_city, dest_iata, dest_city, date_shamsi,
-                f["departure_time"], f["flight_number"], f["price"], f["airline"],
-                f["aircraft_class"], f["is_system"], f["seats_left"]
+                f["departure_time"], f.get("flight_number"), f["price"], f["airline"],
+                f.get("aircraft_class"), f.get("is_system"), f.get("seats_left")
             ))
         conn.commit()
         conn.close()
@@ -162,59 +171,6 @@ class Charter118Pipeline(PipelineBase):
         return flights
 
 # --------------------------
-# Alibaba
-# --------------------------
-class AlibabaPipeline(PipelineBase):
-    def __init__(self):
-        super().__init__("Alibaba", "Flights_Alibaba")
-
-    def build_url(self, origin_iata, dest_iata, date_shamsi, passengers, international=False):
-        base = "https://www.alibaba.ir/international" if international else "https://www.alibaba.ir/flights"
-        return f"{base}/{origin_iata}-{dest_iata}?adult={passengers}&child=0&infant=0&departing={date_shamsi}"
-
-    async def fetch_html(self, url, wait_selector="div.available-card__content"):
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
-            page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle")
-
-            try:
-                await page.wait_for_selector(wait_selector, timeout=25000)
-            except:
-                print("⚠️ کارت‌ها لود نشدند")
-
-            await asyncio.sleep(5)
-            html = await page.content()
-            await browser.close()
-            return html
-
-    def parse_flights(self, html):
-        soup = BeautifulSoup(html, "html.parser")
-        cards = soup.find_all("div", class_="available-card__content")
-        flights = []
-        for card in cards:
-            try:
-                airline = card.find("div", class_="break-words").text.strip()
-                times = card.find_all("strong", class_="text-5 md:text-6")
-                departure_time = times[0].text.strip() if times else None
-                price_tag = card.find("strong", class_="text-secondary-400")
-                price = int(price_tag.text.replace(",", "")) if price_tag else None
-
-                if airline and departure_time and price:
-                    flights.append({
-                        "flight_number": None,
-                        "price": price,
-                        "airline": airline,
-                        "aircraft_class": None,
-                        "is_system": None,
-                        "departure_time": departure_time,
-                        "seats_left": None
-                    })
-            except:
-                continue
-        return flights
-
-# --------------------------
 # اجرای Pipeline
 # --------------------------
 async def main():
@@ -232,17 +188,17 @@ async def main():
 
     base_jdate = jdatetime.date(*map(int, date_shamsi.split('/')))
 
-    pipelines = [Charter118Pipeline(), AlibabaPipeline()]
+    pipelines = [Charter118Pipeline()]
 
     for pipeline in pipelines:
         date_gregorian = base_jdate.togregorian().strftime("%Y-%m-%d")
-        url = pipeline.build_url(origin_iata, dest_iata, date_shamsi, passengers, intl)
-        html = await pipeline.fetch_html(url)
+        url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
+        print(f"📡 دریافت پروازهای {origin_city} → {dest_city} از: {url}")
+        html = await pipeline.fetch_html(url, wait_selector="div.bg-white.rounded-lg")
         flights = pipeline.parse_flights(html)
         pipeline.save_to_db(flights, origin_iata, origin_city, dest_iata, dest_city, date_shamsi)
 
     print("✅ تمام شد!")
 
-# اجرای برنامه
 if __name__ == "__main__":
     asyncio.run(main())
