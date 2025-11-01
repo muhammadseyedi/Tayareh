@@ -20,46 +20,24 @@ IATA_CODES = {
 # --------------------------
 # توابع دیتابیس
 # --------------------------
-def connect_db():
-    return pyodbc.connect("DRIVER={SQL Server};SERVER=localhost;Trusted_Connection=yes;")
+#in SQL
+'''CREATE TABLE Flights_AllSites (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    origin_name NVARCHAR(50),
+    dest_name NVARCHAR(50),
+    departure_date NVARCHAR(10),
+    departure_time NVARCHAR(10),
+    flight_number NVARCHAR(50),
+    airline NVARCHAR(50),
+    aircraft_class NVARCHAR(50),
+    seats_left NVARCHAR(20),
+    
+    price_charter118 BIGINT NULL,
+    price_alibaba BIGINT NULL,
+    price_flightio BIGINT NULL
+);
+'''
 
-def init_db(db_name, table_name):
-    conn = connect_db()
-    cursor = conn.cursor()
-    cursor.execute(f"""
-    IF DB_ID(N'{db_name}') IS NULL
-    BEGIN
-        CREATE DATABASE [{db_name}];
-    END;
-    """)
-    cursor.commit()
-    cursor.close()
-    conn.close()
-
-    conn2 = pyodbc.connect(
-        f"DRIVER={{SQL Server}};SERVER=localhost;DATABASE={db_name};Trusted_Connection=yes;"
-    )
-    cursor2 = conn2.cursor()
-    cursor2.execute(f"""
-    IF OBJECT_ID('dbo.{table_name}', 'U') IS NULL
-    CREATE TABLE dbo.{table_name} (
-        id INT IDENTITY(1,1) PRIMARY KEY,
-        origin_code NVARCHAR(10),
-        origin_name NVARCHAR(50),
-        dest_code NVARCHAR(10),
-        dest_name NVARCHAR(50),
-        departure_date NVARCHAR(10),
-        departure_time NVARCHAR(10),
-        flight_number NVARCHAR(50),
-        price BIGINT,
-        airline NVARCHAR(50),
-        aircraft_class NVARCHAR(50),
-        is_system NVARCHAR(5),
-        seats_left NVARCHAR(20)
-    );
-    """)
-    conn2.commit()
-    conn2.close()
 
 # --------------------------
 # کلاس پایه
@@ -69,7 +47,7 @@ class PipelineBase:
         self.site_name = site_name
         self.db_name = "FlightsDB"
         self.table_name = table_name
-        init_db(self.db_name, self.table_name)
+        
 
     async def fetch_html(self, url, wait_selector=None):
         async with async_playwright() as p:
@@ -93,26 +71,54 @@ class PipelineBase:
             await browser.close()
             return html
 
-    def save_to_db(self, flights, origin_iata, origin_city, dest_iata, dest_city, date_shamsi):
+    def save_to_db(self, flights, origin_city, dest_city, date_shamsi):
         conn = pyodbc.connect(
-            f"DRIVER={{SQL Server}};SERVER=localhost;DATABASE={self.db_name};Trusted_Connection=yes;"
+            f"DRIVER={{SQL Server}};SERVER=localhost;DATABASE=FlightsDB;Trusted_Connection=yes;"
         )
         cursor = conn.cursor()
+    
+        price_column = {
+            "Charter118": "price_charter118",
+            "Alibaba": "price_alibaba",
+            "Flightio": "price_flightio"
+        }[self.site_name]
+    
         for f in flights:
+            flight_no = f.get("flight_number")
+            aircraft_class = f.get("aircraft_class")
+            dep_time = f.get("departure_time")
+    
             cursor.execute(f"""
-                INSERT INTO {self.table_name} (
-                    origin_code, origin_name, dest_code, dest_name, departure_date, 
-                    departure_time, flight_number, price, airline, aircraft_class, 
-                    is_system, seats_left
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                origin_iata, origin_city, dest_iata, dest_city, date_shamsi,
-                f["departure_time"], f.get("flight_number"), f["price"], f["airline"],
-                f.get("aircraft_class"), f.get("is_system"), f.get("seats_left")
-            ))
+                SELECT id FROM Flights_AllSites
+                WHERE flight_number = ? AND aircraft_class = ? AND departure_date = ?
+            """, (flight_no, aircraft_class, date_shamsi))
+            
+            row = cursor.fetchone()
+    
+            if row:  # UPDATE
+                cursor.execute(f"""
+                    UPDATE Flights_AllSites 
+                    SET {price_column} = ?
+                    WHERE id = ?
+                """, (f["price"], row[0]))
+            else:  # INSERT
+                cursor.execute(f"""
+                    INSERT INTO Flights_AllSites (
+                        origin_name, dest_name, departure_date, departure_time, 
+                        flight_number, airline, aircraft_class, seats_left,
+                        {price_column}
+                    )
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                """, (
+                    origin_city, dest_city, date_shamsi, dep_time,
+                    flight_no, f["airline"], aircraft_class, f.get("seats_left"),
+                    f["price"]
+                ))
+    
         conn.commit()
         conn.close()
-        print(f"✅ {len(flights)} پرواز از {self.site_name} ذخیره شد")
+        print(f"✅ {len(flights)} رکورد از {self.site_name} در جدول کلی ذخیره/آپدیت شد")
+    
 
 # --------------------------
 # Charter118 Pipeline
@@ -134,7 +140,7 @@ class Charter118Pipeline(PipelineBase):
                 tags = card.find_all("p", class_=lambda c: c and "bg-blue-400/10" in c)
                 tag_texts = [t.text.strip() for t in tags]
                 aircraft_class = next((t for t in tag_texts if "اکونومی" in t or "بیزینس" in t), None)
-                is_system = "بله" if any("سیستمی" in t for t in tag_texts) else "خیر"
+                #is_system = "بله" if any("سیستمی" in t for t in tag_texts) else "خیر"
                 num_tag = card.find("p", class_=lambda c: c and "bg-gray-400/10" in c)
                 flight_number = num_tag.text.strip() if num_tag else None
                 airline_tag = card.find("p", class_=lambda c: c and "text-darkGray" in c and "text-center" in c)
@@ -154,7 +160,7 @@ class Charter118Pipeline(PipelineBase):
                         "price": price,
                         "airline": airline,
                         "aircraft_class": aircraft_class,
-                        "is_system": is_system,
+                        #"is_system": is_system,
                         "departure_time": departure_time,
                         "seats_left": seats_left
                     })
@@ -214,9 +220,13 @@ class FlightioPipeline(PipelineBase):
                         price = int(price_digits[0])
                 time_spans = card.find_all("span", class_=lambda c: c and "text-title-xl" in c)
                 dep_time = safe_text(time_spans[0]) if len(time_spans) > 0 else None
-                system_tag = card.find("span", class_=lambda c: c and "text-dots" in c)
-                system_type = safe_text(system_tag)
-                is_system = "سیستمی" in (system_type or "")
+                #system_tag = card.find("span", class_=lambda c: c and "text-dots" in c)
+                #system_type = safe_text(system_tag)
+                #is_system = "سیستمی" in (system_type or "")
+                # ✅ کلاس واقعی پرواز (اکونومی / بیزنس) از بخش جزئیات
+                cabin = card.find("span", string=lambda s: s and ("اکونومی" in s or "بیزینس" in s))
+                aircraft_class = cabin.get_text(strip=True).split("-")[0] if cabin else None
+
                 seats = None
                 seat_tag = card.find("label", class_=lambda c: c and "text-red" in c)
                 if seat_tag:
@@ -228,8 +238,9 @@ class FlightioPipeline(PipelineBase):
                         "flight_number": flight_number,
                         "price": price,
                         "airline": airline,
-                        "aircraft_class": system_type,
-                        "is_system": is_system,
+                        "aircraft_class": aircraft_class,
+
+                        #"is_system": is_system,
                         "departure_time": dep_time,
                         "seats_left": seats
                     })
@@ -242,6 +253,7 @@ class FlightioPipeline(PipelineBase):
 # --------------------------
 # Alibaba Pipeline
 # --------------------------
+
 class AlibabaPipeline(PipelineBase):
     def __init__(self):
         super().__init__("Alibaba", "Flights_Alibaba")
@@ -250,64 +262,79 @@ class AlibabaPipeline(PipelineBase):
         base = "https://www.alibaba.ir/international" if international else "https://www.alibaba.ir/flights"
         return f"{base}/{origin_iata}-{dest_iata}?adult={passengers}&child=0&infant=0&departing={date_shamsi}"
 
-    async def fetch_html(self, url, wait_selector="div.available-card__content"):
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
-            context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-            page = await context.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=120000)
-            try:
-                await page.wait_for_selector(wait_selector, timeout=120000)
-                print("✅ کارت‌ها لود شدند")
-            except:
-                print("⚠️ کارت‌ها لود نشدند — شاید پروازی موجود نباشه یا صفحه ساختار جدیدی داره.")
-            for _ in range(10):
-                await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
-                await asyncio.sleep(2)
-            await asyncio.sleep(5)
-            html = await page.content()
-            await browser.close()
-            return html
-
     def parse_flights(self, html):
-        soup = BeautifulSoup(html, "html.parser")
-        cards = soup.find_all("div", class_="available-card__content")
         flights = []
-        for card in cards:
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            cards = soup.select("div.available-card__content")
+            if not cards:
+                print("⚠️ هیچ کارت پروازی پیدا نشد.")
+                return flights
+        except Exception as e:
+            print("⚠️ خطا در واکشی کارت‌ها:", e)
+            return flights
+
+        for idx, card in enumerate(cards):
             try:
-                airline_tag = card.find("div", class_="break-words text-center text-grays-500 text-caption")
-                airline = airline_tag.text.strip() if airline_tag else None
-                tags = card.find_all("span", class_="a-label")
-                tag_texts = [t.text.strip() for t in tags]
-                aircraft_class = next((t for t in tag_texts if "اکونومی" in t or "بیزینس" in t), None)
-                is_system = "بله" if any("سیستمی" in t for t in tag_texts) else "خیر"
-                times = card.find_all("strong", class_="text-5 md:text-6")
-                departure_time = times[0].text.strip() if len(times) >= 1 else None
-                price_tag = card.find("strong", class_="text-secondary-400")
-                price = None
-                if price_tag:
-                    price_text = price_tag.text.replace(",", "").replace("٬", "").strip()
-                    try:
-                        price = int(price_text)
-                    except:
-                        price = None
-                seats_tag = card.find("div", class_="text-2 mt-1 text-danger-400")
-                seats_left = seats_tag.text.strip() if seats_tag else None
-                if airline and departure_time and price:
+                # ✈️ نام ایرلاین
+                airline_tag = card.select_one("div.break-words.text-center.text-grays-500.text-caption")
+                airline = airline_tag.get_text(strip=True) if airline_tag else None
+
+                # ⏰ زمان‌ها
+                times = card.select("strong.text-5, strong.text-6")
+                dep_time = times[0].get_text(strip=True) if len(times) > 0 else None
+                arr_time = times[1].get_text(strip=True) if len(times) > 1 else None
+
+                # 🌆 شهرها
+                cities = card.select("div.flex.gap-2.items-center > span")
+                dep_city = cities[0].get_text(strip=True) if len(cities) > 0 else None
+                arr_city = cities[1].get_text(strip=True) if len(cities) > 1 else None
+
+                # 🆔 شماره پرواز
+                flight_number = None
+                for lbl in card.select("span.text-caption.text-grays-400"):
+                    if "شماره پرواز" in lbl.get_text(strip=True):
+                        num_span = lbl.find_next("span", class_="text-headline-sm text-grays-600")
+                        if num_span:
+                            flight_number = num_span.get_text(strip=True)
+                        break
+
+                # 💺 کلاس پرواز
+                aircraft_class = None
+                for lbl in card.select("span.a-label"):
+                    txt = lbl.get_text(strip=True)
+                    if "اکونومی" in txt or "بیزینس" in txt:
+                        aircraft_class = txt
+                        break
+
+                # 💰 قیمت
+                price_el = card.select_one("strong.text-secondary-400")
+                price = int(re.sub(r"[^\d]", "", price_el.get_text())) if price_el else None
+
+                # 🧍 صندلی باقی‌مانده
+                seats_el = card.select_one("div.text-2.mt-1.text-danger-400 span.ml-1")
+                seats_left = seats_el.get_text(strip=True) if seats_el else None
+
+                if airline and dep_time and price:
                     flights.append({
-                        "flight_number": None,
-                        "price": price,
+                        "flight_number": flight_number,
                         "airline": airline,
+                        "departure_city": dep_city,
+                        "arrival_city": arr_city,
+                        "departure_time": dep_time,
+                        "arrival_time": arr_time,
                         "aircraft_class": aircraft_class,
-                        "is_system": is_system,
-                        "departure_time": departure_time,
+                        "price": price,
                         "seats_left": seats_left
                     })
             except Exception as e:
-                print("⚠️ خطا در کارت علی‌بابا:", e)
+                print(f"⚠️ خطا در کارت {idx}:", e)
                 continue
-        print(f"✅ {len(flights)} پرواز از علی‌بابا استخراج شد")
+
+        print(f"✅ {len(flights)} پرواز از علی‌بابا استخراج شد.")
         return flights
+
+
 
 # --------------------------
 # اجرای Pipeline
@@ -327,18 +354,24 @@ async def main():
 
     base_jdate = jdatetime.date(*map(int, date_shamsi.split('/')))
 
-    pipelines = [Charter118Pipeline(), AlibabaPipeline(), FlightioPipeline()]
+    pipelines = [Charter118Pipeline(), 
+                 AlibabaPipeline(), FlightioPipeline()]
 
     for pipeline in pipelines:
         date_gregorian = base_jdate.togregorian().strftime("%Y-%m-%d")
-        url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
+        if isinstance(pipeline, AlibabaPipeline):
+            url = pipeline.build_url(origin_iata, dest_iata, date_shamsi, passengers, intl)
+        else:
+            url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
+
         print(f"📡 دریافت پروازهای {origin_city} → {dest_city} از: {pipeline.site_name}")
         wait_selector = "div.bg-white.rounded-lg" if isinstance(pipeline, Charter118Pipeline) else \
                         "div.available-card__content" if isinstance(pipeline, AlibabaPipeline) else \
                         "section.transition-input-100"
         html = await pipeline.fetch_html(url, wait_selector=wait_selector)
         flights = pipeline.parse_flights(html)
-        pipeline.save_to_db(flights, origin_iata, origin_city, dest_iata, dest_city, date_shamsi)
+        pipeline.save_to_db(flights, origin_city, dest_city, date_shamsi)
+
 
     print("✅ تمام شد!")
 
