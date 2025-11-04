@@ -111,30 +111,35 @@ class PipelineBase:
             return m.group(1)
         return arr_time_full[:5] if len(arr_time_full) >= 5 else None
 
+
+
+
     def save_to_db(self, flights, origin_city, dest_city, date_shamsi):
         """
-        منطق ذخیره:
-          - برای UPDATE از کلید ترکیبی استفاده می‌کنیم:
+        منطق ذخیره بازنویسی‌شده:
+          - کلید strict برای UPDATE فقط وقتی اجرا می‌شود که همهٔ فیلدهای کلیدی موجود باشند:
             origin_name, dest_name, departure_date, departure_time, arrival_time, airline, aircraft_class
-          - اگر رکورد وجود داشت و قیمت جدید کمتر است یا موجود NULL بود -> آپدیت قیمت مخصوص سایت و فیلدهای airline/aircraft_class
-          - اگر رکورد وجود نداشت -> INSERT جدید (بدون ستون seats_left)
+          - در صورت پیدا شدن رکورد: تنها ستون قیمت مربوط به این سایت آپدیت می‌شود (و airline/aircraft_class آپدیت می‌شوند).
+          - در غیر این صورت INSERT جدید انجام می‌شود.
+          - قیمت‌ها قبل از مقایسه به int تبدیل می‌شوند.
         """
+
+
         if not flights:
             print(f"⚠️ هیچ پروازی برای ذخیره در {self.site_name} وجود ندارد.")
             return
-
+    
         conn = pyodbc.connect(self.db_conn_str)
         cursor = conn.cursor()
-
+    
         inserted = 0
         updated = 0
-
+    
         for f in flights:
             try:
                 dep_time = self._extract_dep_time(f)
                 arr_time = self._extract_arr_time(f)
-
-                # flight number قوی‌تر استخراج شود
+    
                 flight_no = (
                     f.get("flightNumber")
                     or f.get("flight_number")
@@ -143,86 +148,124 @@ class PipelineBase:
                     or (f.get("description", "").split("|")[0].strip() if f.get("description") and "|" in f.get("description") else None)
                     or f.get("flight_no")
                 )
+    
                 airline = f.get("airlineName") or f.get("airline") or f.get("airline_name") or "نامشخص"
-                # تبدیل نام انگلیسی ایرلاین‌ها به فارسی
+
+                # 🧩 نرمال‌سازی نام ایرلاین‌ها (همسان‌سازی حالت‌های مختلف)
                 AIRLINE_MAP = {
-                    "Iran Air Tours": "ایران ایرتور",
-                    "Zagros Airlines": "زاگرس",
-                    "Caspian Airlines": "کاسپین",
-                    "Chabahar Air": "چابهار",
-                    "Iran Aseman Airlines": "آسمان",
-                    "Qeshm Air": "قشم ایر",
-                    "Kish Airlines": "کیش ایر",
+                    "ماهان": "ماهان",
+                    "Mahan Air": "ماهان",
+                    "mahan": "ماهان",
+                    "آتا": "آتا",
+                    "ATA": "آتا",
+                    "Ata Airlines": "آتا",
                     "ATA Airlines": "آتا",
+                    "آتا ایر": "آتا",
+                    "چابهار": "چابهار",
+                    "Chabahar Air": "چابهار",
+                    "Chabahar": "چابهار",
+                    "ساها": "ساها",
                     "Saha": "ساها",
                     "Saha Air": "ساها",
+                    "ساها ایر": "ساها",
+                    "نسیم ایر": "نسیم ایر",
+                    "نسيم اير": "نسیم ایر",
+                    "Nasim Air": "نسیم ایر",
+                    "ایران ایر": "ایران ایر",
                     "Iran Air": "ایران ایر",
-                    "Fly Persia": "فلای پرشیا",
-                    "FlyKish": "فلای کیش",
+                    "زاگرس": "زاگرس",
+                    "Zagros Airlines": "زاگرس",
+                    "کاسپین": "کاسپین",
+                    "Caspian Airlines": "کاسپین",
+                    "فلای کیش": "فلای کیش",
                     "Fly Kish": "فلای کیش",
+                    "FlyKish": "فلای کیش",
+                    "آوا ایر": "آوا ایر",
+                    "Ava Air": "آوا ایر",
+                    "ایران ایرتور": "ایران ایرتور",
+                    "Iran Air Tours": "ایران ایرتور",
+                    "کیش ایر": "کیش ایر",
+                    "Kish Airlines": "کیش ایر",
+                    "اطلس ایر": "اطلس ایر",
+                    "اطلس اير": "اطلس ایر",
                     "Atlas Air": "اطلس ایر",
                     "Atlas Airline": "اطلس ایر",
-                    "Ava Air": "آوا ایر",
-                    "Nasim Air": "نسیم ایر",
-                    "Ervan Air": "اروان",
-                    "Ervan": "اروان",
+                    "تابان": "تابان",
+                    "Taban Air": "تابان",
+                    "Taban Airlines": "تابان",
+                    "وارش": "وارش",
                     "Varesh Airlines": "وارش",
                     "Varesh": "وارش",
-                    "Mahan Air": "ماهان",
-                    "Taban Airlines": "تابان",
-                    "Taban Air": "تابان",
-                    "Pars Air": "پارس ایر",
-                    "Ata": "آتا",
-                    "Ata Airlines": "آتا",
-                    "Aseman Airlines": "آسمان",
                 }
-                airline = AIRLINE_MAP.get(airline.strip(), airline.strip())
 
+                airline = airline.strip()
+                airline = AIRLINE_MAP.get(airline, airline)
 
+    
+                # فقط کلاس‌های واقعی (ممکن است pipeline آن را تنظیم کند)
                 aircraft_class = (
                     f.get("classTypeName")
                     or f.get("class")
                     or f.get("class_type")
                     or f.get("aircraft_class")
-                    or "Unknown"
+                    or None
                 )
 
-                price = f.get("priceAdult") or f.get("price") or f.get("price_adult") or None
-
-                # حذف پردازش صندلی بر اساس درخواست
-                # seats_left = None
-
-                # اگر price صحیح نیست، نادیده بگیر
+                # قیمت ممکن است رشته یا عدد باشد؛ سعی کنیم int بگیریم
+                raw_price = f.get("priceAdult") or f.get("price") or f.get("price_adult") or None
+                price = None
+                if raw_price is not None:
+                    if isinstance(raw_price, str):
+                        digits = re.sub(r"[^\d]", "", raw_price)
+                        price = int(digits) if digits else None
+                    elif isinstance(raw_price, (int, float)):
+                        price = int(raw_price)
                 if price is None:
+                    # اگر قیمت موجود نیست از ذخیره پرواز صرف‌نظر کن
                     continue
-
-                # اگر price column تنظیم نشده، skip
-                if not self.price_column:
-                    raise RuntimeError("price_column برای این pipeline تنظیم نشده است.")
-
-                # Strict match: اگر فیلدهای کلیدی موجودند
-                if dep_time and arr_time and airline and aircraft_class:
+    
+                # اگر فیلدهای کلیدی برای مقایسه وجود ندارند -> درج رکورد جدید
+                key_fields_present = all([
+                    origin_city is not None and origin_city != "",
+                    dest_city is not None and dest_city != "",
+                    date_shamsi is not None and date_shamsi != "",
+                    dep_time is not None,
+                    arr_time is not None,
+                    airline is not None and airline != "",
+                    aircraft_class is not None and aircraft_class != ""
+                ])
+    
+                if key_fields_present:
+                    # SELECT بر اساس کلید دقیقِ خواسته‌شده
                     cursor.execute(f"""
                         SELECT id, {self.price_column}
                         FROM Flights_AllSites
-                        WHERE origin_name=? AND dest_name=? AND departure_date=? 
-                              AND departure_time=? AND arrival_time=? AND airline=? AND aircraft_class=?
+                        WHERE origin_name=? AND dest_name=? AND departure_date=?
+                          AND departure_time=? AND arrival_time=? AND airline=? AND aircraft_class=?
                     """, (origin_city, dest_city, date_shamsi, dep_time, arr_time, airline, aircraft_class))
                     row = cursor.fetchone()
                 else:
-                    # اطلاعات ناقص؛ برای جلوگیری از اشتباهات رکورد جدید درج می‌شود
                     row = None
 
                 if row:
                     existing_price = row[1]
+                    # تبدیل existing_price به int در صورت نیاز
+                    if isinstance(existing_price, str):
+                        ep_digits = re.sub(r"[^\d]", "", existing_price)
+                        existing_price = int(ep_digits) if ep_digits else None
+                    # حالا مقایسه امن
                     if existing_price is None or price < existing_price:
                         cursor.execute(f"""
                             UPDATE Flights_AllSites
-                            SET {self.price_column} = ?, airline=?, aircraft_class=?
+                            SET {self.price_column} = ?, airline = ?, aircraft_class = ?
                             WHERE id = ?
                         """, (price, airline, aircraft_class, row[0]))
                         updated += 1
+                    else:
+                        # قیمت جدید بالاتر یا برابر است -> کاری انجام نمیدیم
+                        pass
                 else:
+                    # INSERT جدید (ستون seats_left حذف شده)
                     cursor.execute(f"""
                         INSERT INTO Flights_AllSites (
                             origin_name, dest_name, departure_date, departure_time, arrival_time,
@@ -234,7 +277,7 @@ class PipelineBase:
                         flight_no, airline, aircraft_class, price
                     ))
                     inserted += 1
-
+    
             except Exception as e:
                 print("⚠️ خطا در ذخیره رکورد:", e)
                 continue
@@ -586,7 +629,110 @@ class MrBilitPipeline(PipelineBase):
     
         print(f"✈️ {len(flights)} پرواز از مستربلیت استخراج شد")
         return flights
+# --------------------------
+# Ghasedak24 Pipeline
+# --------------------------
+class GhasedakPipeline(PipelineBase):
+    def __init__(self):
+        super().__init__("Ghasedak24", "Flights_Ghasedak24")
+        self.price_column = "price_ghasedak"
+        self.HEADLESS = False  # برای تست بهتره False باشه
 
+    def build_url(self, origin_iata, dest_iata, date_gregorian, passengers, international=False):
+        # ⚠️ Ghasedak فقط داخلیه فعلاً
+        return f"https://ghasedak24.com/flights/{origin_iata}-{dest_iata}?date-time={date_gregorian}&adult-count={passengers}&child-count=0&infant-count=0"
+
+    async def fetch_html(self, url, wait_selector="div.ghk-grid.ghk-grid-cols-12"):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=self.HEADLESS)
+            context = await browser.new_context()
+            page = await context.new_page()
+            try:
+                await page.goto(url, timeout=120000)
+                await page.wait_for_selector(wait_selector, timeout=60000)
+                await asyncio.sleep(2)
+            except Exception as e:
+                print("⚠️ خطا در بارگذاری صفحه Ghasedak:", e)
+            html = await page.content()
+            await browser.close()
+            return html
+
+
+    def parse_flights(self, html):
+
+
+        soup = BeautifulSoup(html, "html.parser")
+        cards = soup.select("div.ghk-grid.ghk-grid-cols-12")
+        flights = []
+    
+        print(f"✅ تعداد کارت‌ها در Ghasedak24: {len(cards)}")
+    
+        for c in cards:
+            try:
+                airline_tag = c.select_one("div.ghk-flex.ghk-flex-col.ghk-items-center span.ghk-text-xs14")
+                airline = airline_tag.text.strip() if airline_tag else None
+    
+                times = c.select("div.ghk-flex.ghk-items-center.ghk-text-md22")
+                dep_time = times[0].text.strip() if len(times) > 0 else None
+                arr_time = times[1].text.strip() if len(times) > 1 else None
+    
+                airport_spans = c.select("span.ghk-text-sm14")
+                origin = airport_spans[0].text.strip() if len(airport_spans) > 0 else None
+                dest = airport_spans[1].text.strip() if len(airport_spans) > 1 else None
+    
+                # تبدیل نام فرودگاه به شهر
+                def normalize_airport(name):
+                    if not name:
+                        return None
+                    name = re.sub(r"فرودگاه|بین‌المللی|Airport|International", "", name).strip()
+                    name = name.replace("مهرآباد", "تهران").replace("امام خمینی", "تهران")
+                    return name
+    
+                origin_city = normalize_airport(origin)
+                dest_city = normalize_airport(dest)
+
+                price_tag = c.select_one("span.ghk-text-md22.ghk-text-blue-primary")
+                price = None
+                if price_tag:
+                    txt = price_tag.text.replace(",", "").replace("٬", "").strip()
+                    if txt.isdigit():
+                        price = int(txt)
+    
+                # ✅ فقط کلاس پرواز واقعی (اکونومی / بیزینس)
+                class_tags = c.select("div.ghk-bg-gray-50.ghk-text-gray-500, div.ghk-text-gray-500, div.ghk-text-xs14")
+                # تشخیص کلاس پرواز (اکونومی / بیزینس)
+                aircraft_class = None
+                try:
+                    class_divs = c.select("div.ghk-hidden.xl\\:ghk-flex.ghk-justify-center.ghk-gap-x-2 div")
+                    for div_tag in class_divs:
+                        txt = div_tag.get_text(strip=True)
+                        if any(word in txt for word in ["اکونومی", "Economy"]):
+                            aircraft_class = "اکونومی"
+                            break
+                        elif any(word in txt for word in ["بیزینس", "بیزنس", "Business", "Bussiness"]):
+                            aircraft_class = "بیزینس"
+                            break
+                except Exception as e:
+                    aircraft_class = None
+
+    
+                if airline and price and dep_time:
+                    flights.append({
+                        "airline": airline,
+                        "aircraft_class": aircraft_class,
+                        "departure_time": dep_time,
+                        "arrival_time": arr_time,
+                        "origin_name": origin_city,
+                        "dest_name": dest_city,
+                        "price": price,
+                    })
+    
+            except Exception as e:
+                print("⚠️ خطا در کارت Ghasedak:", e)
+                continue
+    
+        print(f"✈️ {len(flights)} پرواز از Ghasedak استخراج شد.")
+        return flights
 
 # --------------------------
 # اجرای Pipeline
@@ -606,7 +752,7 @@ async def main():
 
     base_jdate = jdatetime.date(*map(int, date_shamsi.split('/')))
 
-    pipelines = [Charter118Pipeline(), AlibabaPipeline(), FlightioPipeline(),MrBilitPipeline() ]
+    pipelines = [AlibabaPipeline()]#GhasedakPipeline(),Charter118Pipeline(), FlightioPipeline(),MrBilitPipeline() ]
 
     for pipeline in pipelines:
         date_gregorian = base_jdate.togregorian().strftime("%Y-%m-%d")
@@ -634,4 +780,4 @@ async def main():
     print("✅ تمام شد!")
 
 if __name__ == "__main__":
-     asyncio.run(main())
+     asyncio.run( main())
