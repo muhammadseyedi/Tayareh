@@ -62,14 +62,9 @@ class PipelineBase:
 
     def _extract_dep_time(self, f):
         """
-        ورودی: دیکشنری فلیتی از API یا پارسر
-        خروجی: departure_time بصورت 'HH:MM' یا None
-        منطق:
-          - اگر leaveDateTime دارای 'T' بود -> قسمت ساعت بعد از T را برمی‌گردانیم (HH:MM)
-          - اگر فقط 'YYYY-MM-DD' بود -> None (ما تاریخ را جدا نگه می‌داریم)
-          - در غیر این صورت سعی می‌کنیم کوتاهترین شکل ساعت را استخراج کنیم.
+        استخراج زمان حرکت بصورت 'HH:MM' یا None
         """
-        dep_time_full = (f.get("leaveDateTime") or f.get("departure_time") or "").strip()
+        dep_time_full = (f.get("leaveDateTime") or f.get("departure_time") or f.get("departureDateTime") or f.get("leave_date_time") or "").strip()
         if not dep_time_full:
             return None
 
@@ -91,15 +86,38 @@ class PipelineBase:
         # fallback: اگر طول مناسب داشت برش بزن
         return dep_time_full[:5] if len(dep_time_full) >= 5 else None
 
+    def _extract_arr_time(self, f):
+        """
+        استخراج زمان رسیدن بصورت 'HH:MM' یا None
+        بررسی فیلدهای ممکن: arrivalDateTime, arrival_time, arriveDateTime, arrivalDate, arrival
+        """
+        arr_time_full = (f.get("arrivalDateTime") or f.get("arrival_time") or f.get("arriveDateTime") or f.get("arrival") or f.get("arrive") or "").strip()
+        if not arr_time_full:
+            # گاهی اوقات در پارسرها دو تا تگ زمان داریم؛ اگر dict شامل 'times' یا 'departure_time' و 'arrival_time' نیست می‌بینیم
+            # اما اینجا فقط از فیلدهای مستقیم استفاده می‌کنیم؛ در parserها هم سعی شده arrival_time جداگانه ارسال شود.
+            return None
+
+        if "T" in arr_time_full:
+            try:
+                return arr_time_full.split("T")[1][:5]
+            except Exception:
+                return None
+
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", arr_time_full):
+            return None
+
+        m = re.search(r"(\d{1,2}:\d{2})", arr_time_full)
+        if m:
+            return m.group(1)
+        return arr_time_full[:5] if len(arr_time_full) >= 5 else None
+
     def save_to_db(self, flights, origin_city, dest_city, date_shamsi):
         """
         منطق ذخیره:
-          - اگر رکوردی با (origin,dest,date,flight_number,departure_time,aircraft_class)
-            وجود داشته باشد، مقدار price در ستون مخصوص سایت فقط در صورتی آپدیت می‌شود
-            که قیمت جدید کمتر از قیمت موجود باشد یا مقدار موجود NULL باشد.
-          - اگر رکورد وجود نداشت -> INSERT جدید.
-          - اگر departure_time یا flight_number موجود نباشد، رکورد جدید درج می‌شود
-            (برای جلوگیری از حذف داده‌های ناقص).
+          - برای UPDATE از کلید ترکیبی استفاده می‌کنیم:
+            origin_name, dest_name, departure_date, departure_time, arrival_time, airline, aircraft_class
+          - اگر رکورد وجود داشت و قیمت جدید کمتر است یا موجود NULL بود -> آپدیت قیمت مخصوص سایت و فیلدهای airline/aircraft_class
+          - اگر رکورد وجود نداشت -> INSERT جدید (بدون ستون seats_left)
         """
         if not flights:
             print(f"⚠️ هیچ پروازی برای ذخیره در {self.site_name} وجود ندارد.")
@@ -114,6 +132,8 @@ class PipelineBase:
         for f in flights:
             try:
                 dep_time = self._extract_dep_time(f)
+                arr_time = self._extract_arr_time(f)
+
                 # flight number قوی‌تر استخراج شود
                 flight_no = (
                     f.get("flightNumber")
@@ -124,6 +144,41 @@ class PipelineBase:
                     or f.get("flight_no")
                 )
                 airline = f.get("airlineName") or f.get("airline") or f.get("airline_name") or "نامشخص"
+                # تبدیل نام انگلیسی ایرلاین‌ها به فارسی
+                AIRLINE_MAP = {
+                    "Iran Air Tours": "ایران ایرتور",
+                    "Zagros Airlines": "زاگرس",
+                    "Caspian Airlines": "کاسپین",
+                    "Chabahar Air": "چابهار",
+                    "Iran Aseman Airlines": "آسمان",
+                    "Qeshm Air": "قشم ایر",
+                    "Kish Airlines": "کیش ایر",
+                    "ATA Airlines": "آتا",
+                    "Saha": "ساها",
+                    "Saha Air": "ساها",
+                    "Iran Air": "ایران ایر",
+                    "Fly Persia": "فلای پرشیا",
+                    "FlyKish": "فلای کیش",
+                    "Fly Kish": "فلای کیش",
+                    "Atlas Air": "اطلس ایر",
+                    "Atlas Airline": "اطلس ایر",
+                    "Ava Air": "آوا ایر",
+                    "Nasim Air": "نسیم ایر",
+                    "Ervan Air": "اروان",
+                    "Ervan": "اروان",
+                    "Varesh Airlines": "وارش",
+                    "Varesh": "وارش",
+                    "Mahan Air": "ماهان",
+                    "Taban Airlines": "تابان",
+                    "Taban Air": "تابان",
+                    "Pars Air": "پارس ایر",
+                    "Ata": "آتا",
+                    "Ata Airlines": "آتا",
+                    "Aseman Airlines": "آسمان",
+                }
+                airline = AIRLINE_MAP.get(airline.strip(), airline.strip())
+
+
                 aircraft_class = (
                     f.get("classTypeName")
                     or f.get("class")
@@ -131,30 +186,31 @@ class PipelineBase:
                     or f.get("aircraft_class")
                     or "Unknown"
                 )
-                seats_left = f.get("seat") or f.get("seats_left") or None
+
                 price = f.get("priceAdult") or f.get("price") or f.get("price_adult") or None
+
+                # حذف پردازش صندلی بر اساس درخواست
+                # seats_left = None
 
                 # اگر price صحیح نیست، نادیده بگیر
                 if price is None:
-                    # اگر سایت دیگری قیمت دارد، ممکن است بعداً تکمیل شود، ولی این رکورد فعلاً ذخیره نشود
-                    # (قابل تغییر) — برای حالا رد می‌کنیم تا دیتابیس با قیمت‌های نامشخص پر نشود
                     continue
 
                 # اگر price column تنظیم نشده، skip
                 if not self.price_column:
                     raise RuntimeError("price_column برای این pipeline تنظیم نشده است.")
 
-                # اگر هم شماره پرواز و هم ساعت موجود باشند -> strict match
-                if flight_no and dep_time:
+                # Strict match: اگر فیلدهای کلیدی موجودند
+                if dep_time and arr_time and airline and aircraft_class:
                     cursor.execute(f"""
                         SELECT id, {self.price_column}
                         FROM Flights_AllSites
                         WHERE origin_name=? AND dest_name=? AND departure_date=? 
-                              AND flight_number=? AND departure_time=? AND aircraft_class=?
-                    """, (origin_city, dest_city, date_shamsi, flight_no, dep_time, aircraft_class))
+                              AND departure_time=? AND arrival_time=? AND airline=? AND aircraft_class=?
+                    """, (origin_city, dest_city, date_shamsi, dep_time, arr_time, airline, aircraft_class))
                     row = cursor.fetchone()
                 else:
-                    # اطلاعات ناقص؛ برای جلوگیری از اشتباهات بهتر است رکورد جدید درج شود
+                    # اطلاعات ناقص؛ برای جلوگیری از اشتباهات رکورد جدید درج می‌شود
                     row = None
 
                 if row:
@@ -162,21 +218,20 @@ class PipelineBase:
                     if existing_price is None or price < existing_price:
                         cursor.execute(f"""
                             UPDATE Flights_AllSites
-                            SET {self.price_column} = ?, airline=?, seats_left=?, aircraft_class=?
+                            SET {self.price_column} = ?, airline=?, aircraft_class=?
                             WHERE id = ?
-                        """, (price, airline, seats_left, aircraft_class, row[0]))
+                        """, (price, airline, aircraft_class, row[0]))
                         updated += 1
                 else:
                     cursor.execute(f"""
                         INSERT INTO Flights_AllSites (
-                            origin_name, dest_name, departure_date, departure_time,
-                            flight_number, airline, aircraft_class, seats_left,
-                            {self.price_column}
+                            origin_name, dest_name, departure_date, departure_time, arrival_time,
+                            flight_number, airline, aircraft_class, {self.price_column}
                         )
                         VALUES (?,?,?,?,?,?,?,?,?)
                     """, (
-                        origin_city, dest_city, date_shamsi, dep_time,
-                        flight_no, airline, aircraft_class, seats_left, price
+                        origin_city, dest_city, date_shamsi, dep_time, arr_time,
+                        flight_no, airline, aircraft_class, price
                     ))
                     inserted += 1
 
@@ -200,11 +255,35 @@ class Charter118Pipeline(PipelineBase):
     def build_url(self, origin_iata, dest_iata, date_gregorian, passengers, international=False):
         base = "https://charter118.ir/international-flights" if international else "https://charter118.ir/flights"
         return f"{base}/{origin_iata}-{dest_iata}?adult={passengers}&child=0&infant=0&departing={date_gregorian}"
+    async def fetch_html(self, url, wait_selector=None):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=self.HEADLESS)
+            context = await browser.new_context()
+            page = await context.new_page()
+    
+            await page.goto(url, timeout=120000)
+    
+            if wait_selector:
+                try:
+                    await page.wait_for_selector(wait_selector, timeout=20000)
+                except:
+                    print("⚠️ المان پیدا نشد - سعی به اسکرول")
+            
+            for _ in range(6):
+                await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+                await asyncio.sleep(1)
+    
+            html = await page.content()
+            await browser.close()
+            return html
+
 
     def parse_flights(self, html):
         soup = BeautifulSoup(html, "html.parser")
         cards = soup.find_all("div", class_=lambda c: c and "bg-white" in c and "rounded-lg" in c)
         flights = []
+        print("✅ تعداد کارت های پیدا شده در Charter118:", len(cards))
+
         for card in cards:
             try:
                 tags = card.find_all("p", class_=lambda c: c and "bg-blue-400/10" in c)
@@ -216,13 +295,15 @@ class Charter118Pipeline(PipelineBase):
                 airline = airline_tag.text.strip() if airline_tag else None
                 times = card.find_all("span", class_=lambda c: c and "text-black" in c and "text-xl" in c)
                 departure_time = times[0].text.strip() if times else None
+                arrival_time = times[1].text.strip() if times and len(times) > 1 else None
                 price_tag = card.find("p", class_=lambda c: c and "text-green-700" in c)
                 price = None
                 if price_tag:
                     price_text = price_tag.text.replace(",", "").replace("٬", "").strip()
                     price = int(price_text) if price_text.isdigit() else None
-                seats_tag = card.find("p", class_=lambda c: c and "text-primary" in c)
-                seats_left = seats_tag.text.strip() if seats_tag else None
+
+                # حذف استخراج صندلی طبق درخواست
+
                 if airline and departure_time and price:
                     flights.append({
                         "flight_number": flight_number,
@@ -230,7 +311,7 @@ class Charter118Pipeline(PipelineBase):
                         "airline": airline,
                         "aircraft_class": aircraft_class,
                         "departure_time": departure_time,
-                        "seats_left": seats_left
+                        "arrival_time": arrival_time
                     })
             except Exception:
                 continue
@@ -294,15 +375,12 @@ class FlightioPipeline(PipelineBase):
                         price = int(price_digits[0])
                 time_spans = card.find_all("span", class_=lambda c: c and "text-title-xl" in c)
                 dep_time = safe_text(time_spans[0]) if len(time_spans) > 0 else None
+                arr_time = safe_text(time_spans[1]) if len(time_spans) > 1 else None
                 cabin = card.find("span", string=lambda s: s and ("اکونومی" in s or "بیزینس" in s))
                 aircraft_class = cabin.get_text(strip=True).split("-")[0] if cabin else None
 
-                seats = None
-                seat_tag = card.find("label", class_=lambda c: c and "text-red" in c)
-                if seat_tag:
-                    m = re.search(r"(\d+)", seat_tag.text)
-                    if m:
-                        seats = int(m.group(1))
+                # حذف استخراج صندلی
+
                 if airline and price and dep_time:
                     flights.append({
                         "flight_number": flight_number,
@@ -310,7 +388,7 @@ class FlightioPipeline(PipelineBase):
                         "airline": airline,
                         "aircraft_class": aircraft_class,
                         "departure_time": dep_time,
-                        "seats_left": seats
+                        "arrival_time": arr_time
                     })
             except Exception as e:
                 print("⚠️ خطا در کارت:", e)
@@ -391,9 +469,10 @@ class AlibabaPipeline(PipelineBase):
                     "departure_city": f.get("originName"),
                     "arrival_city": f.get("destinationName"),
                     "leaveDateTime": f.get("leaveDateTime"),  # کل فیلد برای استخراج زمان بعداً
+                    "arrivalDateTime": f.get("arrivalDateTime"),
                     "aircraft_class": f.get("classTypeName"),
                     "price": f.get("priceAdult"),
-                    "seats_left": seats
+                    # seats_left حذف شد
                 })
             except Exception as e:
                 print("⚠️ خطا در پردازش پرواز از علی‌بابا:", e)
@@ -401,6 +480,113 @@ class AlibabaPipeline(PipelineBase):
 
         print(f"✅ {len(flights)} پرواز از علی‌بابا استخراج شد (بدون ظرفیت صفر).")
         return flights
+
+
+# --------------------------
+# MrBilit Pipeline
+# --------------------------
+class MrBilitPipeline(PipelineBase):
+    def __init__(self):
+        super().__init__("MrBilit", "Flights_MrBilit")
+        self.price_column = "price_mrbilit"
+        self.HEADLESS = False  # بهتر برای تست
+    
+    def build_url(self, origin_iata, dest_iata, date_gregorian, passengers, international=False):
+        # MrBilit از تاریخ شمسی استفاده می‌کند نه میلادی!
+        # انتظار دارد فرمت 1404-08-15
+        # پس ورودی date_gregorian را تغییر نمی‌دهیم،
+        # بلکه همان تاریخ شمسی را از main پاس می‌دهیم
+        return f"https://mrbilit.com/flights/{origin_iata}-{dest_iata}?departureDate={date_gregorian}"
+
+    async def fetch_html(self, url, wait_selector=".trip-package-info"):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=self.HEADLESS)
+            context = await browser.new_context()
+            page = await context.new_page()
+
+            try:
+                await page.goto(url, timeout=60000)
+            except Exception as e:
+                print("⚠️ خطا در باز کردن مستربلیت:", e)
+
+            try:
+                await page.wait_for_selector(wait_selector, timeout=20000)
+            except:
+                print("⚠️ پروازی نمایش داده نشد در مستربلیت")
+
+            # اسکرول برای لود کامل
+            for _ in range(5):
+                await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+                await asyncio.sleep(0.8)
+
+            html = await page.content()
+            await browser.close()
+            return html
+
+    def parse_flights(self, html):
+        soup = BeautifulSoup(html, "html.parser")
+        cards = soup.select(".trip-package-info")
+        flights = []
+    
+        for card in cards:
+            try:
+                origin = card.select(".locations p")[0].text.strip()
+                destination = card.select(".locations p")[1].text.strip()
+                dep_time = card.select(".time")[0].text.strip()
+
+                # بعضی زمان‌ها ممکن است با ساختار دیگری برای arrival باشند؛ تلاش برای استخراج
+                arr_time = None
+                time_nodes = card.select(".time")
+                if len(time_nodes) > 1:
+                    arr_time = time_nodes[1].text.strip()
+
+                airline_tag = card.select_one("div.title-container p")
+                airline = airline_tag.text.strip() if airline_tag else "نامشخص"
+
+                # حذف صندلی
+
+                # ✅ استخراج قیمت
+                price_tag = card.select_one(".price")
+                if not price_tag:
+                    continue
+                price_text = price_tag.text.replace(",", "").replace("٬", "")
+                price_digits = "".join(re.findall(r"\d+", price_text))
+                price = int(price_digits) if price_digits.isdigit() else None
+
+                # ✅ استخراج کلاس پرواز (اکونومی/بیزینس)
+                class_tag = (
+                    card.select_one(".badge") or
+                    card.select_one(".ticket-type") or
+                    card.select_one(".cabin-type") or
+                    card.find(string=lambda t: "اکونومی" in t or "بیزینس" in t or "Economy" in t or "Business" in t)
+                )
+
+                aircraft_class = None
+                if class_tag:
+                    txt = class_tag.get_text(strip=True) if hasattr(class_tag, "get_text") else str(class_tag)
+                    if "اکونومی" in txt or "Economy" in txt:
+                        aircraft_class = "اکونومی"
+                    elif "بیزینس" in txt or "Business" in txt:
+                        aircraft_class = "بیزینس"
+    
+                flights.append({
+                    "flight_number": None,   # MrBilit بدون کلیک نشان نمی‌دهد
+                    "price": price,
+                    "airline": airline,
+                    "aircraft_class": aircraft_class,  # ✅ اضافه شد
+                    "departure_time": dep_time,
+                    "arrival_time": arr_time,
+                    "origin": origin,
+                    "destination": destination,
+                })
+    
+            except Exception as e:
+                print("⚠️ خطا در کارت مستربلیت:", e)
+                continue
+    
+        print(f"✈️ {len(flights)} پرواز از مستربلیت استخراج شد")
+        return flights
+
 
 # --------------------------
 # اجرای Pipeline
@@ -420,7 +606,7 @@ async def main():
 
     base_jdate = jdatetime.date(*map(int, date_shamsi.split('/')))
 
-    pipelines = [Charter118Pipeline(), AlibabaPipeline(), FlightioPipeline()]
+    pipelines = [Charter118Pipeline(), AlibabaPipeline(), FlightioPipeline(),MrBilitPipeline() ]
 
     for pipeline in pipelines:
         date_gregorian = base_jdate.togregorian().strftime("%Y-%m-%d")
@@ -429,6 +615,10 @@ async def main():
 
         if isinstance(pipeline, AlibabaPipeline):
             flights = await pipeline.fetch_flights(origin_iata, dest_iata, date_shamsi, passengers, intl)
+        elif isinstance(pipeline, MrBilitPipeline):
+            url = pipeline.build_url(origin_iata, dest_iata, date_shamsi.replace("/", "-"), passengers, intl)
+            html = await pipeline.fetch_html(url)
+            flights = pipeline.parse_flights(html)
         else:
             url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
             wait_selector = (
