@@ -183,6 +183,7 @@ class PipelineBase:
                     "آوا ایر": "آوا ایر",
                     "Ava Air": "آوا ایر",
                     "ایران ایرتور": "ایران ایرتور",
+                    "ایران ایرتور": "ایران ایر تور",
                     "Iran Air Tours": "ایران ایرتور",
                     "کیش ایر": "کیش ایر",
                     "Kish Airlines": "کیش ایر",
@@ -734,9 +735,179 @@ class GhasedakPipeline(PipelineBase):
         print(f"✈️ {len(flights)} پرواز از Ghasedak استخراج شد.")
         return flights
 
+
+
+# --------------------------
+# Flytoday Pipeline - کپی دقیق از کد اصلی که کار می‌کنه
+# --------------------------
+class FlytodayPipeline(PipelineBase):
+    def __init__(self):
+        super().__init__("FlyToday", "Flights_Flytoday")
+        self.price_column = "price_flytoday"
+        self.HEADLESS = True
+
+    def build_url(self, origin_iata, dest_iata, date_gregorian, passengers, international=False):
+        """ساخت URL برای Flytoday"""
+        is_domestic = "true" if not international else "false"
+        origin_param = f"{origin_iata.lower()},1"
+        dest_param = f"{dest_iata.lower()},1"
+        
+        return (
+            f"https://www.flytoday.ir/flight/search?"
+            f"departure={origin_param}&arrival={dest_param}&"
+            f"departureDate={date_gregorian}&"
+            f"adt={passengers}&chd=0&inf=0&cabin=1&"
+            f"isDomestic={is_domestic}&isAnyWhere=false"
+        )
+
+    async def fetch_and_parse(self, url):
+        """
+        ⭐ نسخه تست‌شده که کار می‌کنه
+        """
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=self.HEADLESS)
+            page = await browser.new_page()
+            
+            try:
+                print("🔄 در حال باز کردن صفحه Flytoday...")
+                await page.goto(url, timeout=60000)
+                print("✅ صفحه باز شد")
+            except Exception as e:
+                print(f"⚠️ خطا در لود صفحه Flytoday: {e}")
+                await browser.close()
+                return []
+            
+            # ⏳ صبر بیشتر (مثل کد تستی)
+            print("⏳ صبر 10 ثانیه برای لود کامل...")
+            await asyncio.sleep(10)
+            
+            # 🔍 چک تعداد کارت‌ها
+            try:
+                card_count = await page.locator("div.w-full.flex.justify-between.gap-2").count()
+                print(f"🔍 تعداد کارت‌های یافت شده: {card_count}")
+                
+                if card_count == 0:
+                    print("❌ هیچ کارتی پیدا نشد!")
+                    await browser.close()
+                    return []
+            except Exception as e:
+                print(f"⚠️ خطا در شمارش کارت‌ها: {e}")
+            
+            # دریافت HTML
+            content = await page.content()
+            await browser.close()
+            
+            # پارس کردن
+            soup = BeautifulSoup(content, "html.parser")
+            flight_cards = soup.select("div.w-full.flex.justify-between.gap-2")
+            flights = []
+            
+            print(f"✅ شروع پردازش {len(flight_cards)} کارت...")
+            
+            for idx, f in enumerate(flight_cards):
+                try:
+                    # زمان حرکت و رسیدن
+                    time_div = f.select_one("div.relative.text-gray-900")
+                    if not time_div:
+                        print(f"⚠️ کارت {idx}: time_div پیدا نشد")
+                        continue
+                    
+                    times = [t.get_text(strip=True) for t in time_div.select("div.inline-block.relative")]
+                    if len(times) < 2:
+                        print(f"⚠️ کارت {idx}: زمان‌ها کافی نیست - {times}")
+                        continue
+                    departure_time, arrival_time = times[0], times[1]
+                    
+                    # مبدا و مقصد
+                    route_div = f.select_one("div.text-nowrap.text-xs.md\\:text-sm.text-gray-700.font-medium")
+                    if not route_div:
+                        print(f"⚠️ کارت {idx}: route_div پیدا نشد")
+                        continue
+                    
+                    cities_raw = [c.get_text(strip=True) for c in route_div.select("div.inline-block.relative")]
+                    if len(cities_raw) < 2:
+                        print(f"⚠️ کارت {idx}: شهرها کافی نیست - {cities_raw}")
+                        continue
+                    
+                    origin_name = re.sub(r"\s*\(.*?\)", "", cities_raw[0]).strip()
+                    dest_name = re.sub(r"\s*\(.*?\)", "", cities_raw[1]).strip()
+                    
+                    # ایرلاین
+                    airline_div = f.select_one("span.text-xs.text-gray-700.font-semibold.text-nowrap")
+                    airline = airline_div.get_text(strip=True) if airline_div else "نامشخص"
+                    
+                    # کلاس پروازی
+                    aircraft_class_div = f.select_one("span.text-xs.text-gray-700.font-noraml.ms-0\\.5")
+                    aircraft_class = aircraft_class_div.get_text(strip=True) if aircraft_class_div else None
+                    
+                    # 💰 قیمت
+                    price = None
+                    all_spans = f.find_all("span")
+                    
+                    for span in all_spans:
+                        text = span.get_text(strip=True).replace(",", "").replace("٬", "")
+                        digits = re.sub(r"[^\d]", "", text)
+                        # قیمت معمولاً 6-8 رقمی
+                        if digits and len(digits) >= 6 and len(digits) <= 9:
+                            price = int(digits)
+                            break
+                    
+                    if not price:
+                        # تلاش دوم: جستجوی دقیق‌تر
+                        for span in all_spans:
+                            text = span.get_text(strip=True)
+                            # اگه "تومان" یا عدد بزرگ داره
+                            if "تومان" in text or "ریال" in text:
+                                digits = re.sub(r"[^\d]", "", text)
+                                if digits and len(digits) >= 5:
+                                    price = int(digits)
+                                    break
+                    
+                    if not price:
+                        print(f"⚠️ کارت {idx}: قیمت پیدا نشد - {airline}")
+                        if idx < 3:  # فقط 3 تای اول debug کن
+                            span_texts = [s.get_text(strip=True)[:30] for s in all_spans[:15]]
+                            print(f"   📝 Spans: {span_texts}")
+                        continue
+                    
+                    # شماره پرواز
+                    flight_number = None
+                    
+                    flights.append({
+                        "flight_number": flight_number,
+                        "price": price,
+                        "airline": airline,
+                        "aircraft_class": aircraft_class,
+                        "departure_time": departure_time,
+                        "arrival_time": arrival_time,
+                        "origin_name": origin_name,
+                        "dest_name": dest_name,
+                    })
+                    
+                    if idx < 3:  # اولی‌ها رو چاپ کن
+                        print(f"✅ کارت {idx}: {airline} | {departure_time}-{arrival_time} | {price:,} تومان")
+                    
+                except Exception as e:
+                    print(f"⚠️ خطا در کارت {idx}: {e}")
+                    continue
+            
+            print(f"✈️ {len(flights)} پرواز از FlyToday استخراج شد")
+            return flights
+
+    async def fetch_html(self, url, wait_selector=None):
+        """این متد دیگه استفاده نمیشه - fetch_and_parse رو استفاده می‌کنیم"""
+        pass
+
+    def parse_flights(self, html):
+        """این متد دیگه استفاده نمیشه - fetch_and_parse رو استفاده می‌کنیم"""
+        pass
 # --------------------------
 # اجرای Pipeline
 # --------------------------
+# --------------------------
+# 🔧 تغییرات لازم در main()
+# --------------------------
+
 async def main():
     origin_city = input("مبدأ: ").strip().lower()
     dest_city = input("مقصد: ").strip().lower()
@@ -752,20 +923,42 @@ async def main():
 
     base_jdate = jdatetime.date(*map(int, date_shamsi.split('/')))
 
-    pipelines = [AlibabaPipeline()]#GhasedakPipeline(),Charter118Pipeline(), FlightioPipeline(),MrBilitPipeline() ]
+    # 🔴 لیست pipeline ها
+    pipelines = [
+        #AlibabaPipeline(),
+        #GhasedakPipeline(),
+        #Charter118Pipeline(),
+        #FlightioPipeline(),
+        #MrBilitPipeline(),
+        FlytodayPipeline()  # ✅ اضافه شده
+    ]
 
     for pipeline in pipelines:
         date_gregorian = base_jdate.togregorian().strftime("%Y-%m-%d")
 
         print(f"\n📡 دریافت پروازهای {origin_city} → {dest_city} از: {pipeline.site_name}")
 
+        # 🔴 این قسمت مهمه - چک کن درست باشه
         if isinstance(pipeline, AlibabaPipeline):
             flights = await pipeline.fetch_flights(origin_iata, dest_iata, date_shamsi, passengers, intl)
+        
         elif isinstance(pipeline, MrBilitPipeline):
             url = pipeline.build_url(origin_iata, dest_iata, date_shamsi.replace("/", "-"), passengers, intl)
             html = await pipeline.fetch_html(url)
             flights = pipeline.parse_flights(html)
+        
+        elif isinstance(pipeline, FlytodayPipeline):  # ✅ باید این قسمت رو اضافه کنی
+            url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
+            print(f"🔗 URL: {url}")  # دیباگ
+            flights = await pipeline.fetch_and_parse(url)
+        
+        elif isinstance(pipeline, GhasedakPipeline):
+            url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
+            html = await pipeline.fetch_html(url)
+            flights = pipeline.parse_flights(html)
+        
         else:
+            # Charter118 و Flightio
             url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
             wait_selector = (
                 "div.bg-white.rounded-lg"
@@ -779,5 +972,6 @@ async def main():
 
     print("✅ تمام شد!")
 
+
 if __name__ == "__main__":
-     asyncio.run( main())
+     asyncio.run(main())
