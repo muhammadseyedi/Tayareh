@@ -1241,7 +1241,121 @@ class EligashtPipeline(PipelineBase):
         return flights
 
 
+#--------------------------
+#Ultravs
+#--------------------------
+class UltravsPipeline(PipelineBase):
+    def __init__(self):
+        super().__init__("Ultravs", "Flights_Ultravs")
+        self.price_column = "price_ultravs"
+        # سایت eligasht ممکنه js-heavy باشه — در صورت تشخیص bot-blocking می‌تونی HEADLESS = False کنی
+        self.HEADLESS = True
+        
+    def build_url(self, origin_city, dest_city, date_gregorian, passengers, international=False):
+        """
+        الگوی URL مشابه مثالی که دادی:
+        https://utravs.com/flight-search/Tehran-to-Mashhad?adult=1&child=0&infant=0&departing=2025-11-11&ticketType=OneWay
+        برای ساخت آدرس از dest_iata یا نام مقصد در مسیر استفاده می‌کنیم (dest_iata یا dest_name را lowercase کن).
+        """
+        
+        return (
+            f" https://utravs.com/flight-search/"
+            f"{origin_city}-to-{dest_city}?&adult={passengers}&child=0&infant=0&departing={date_gregorian}&ticketType=OneWay"
+        )
 
+    async def fetch_html(self, url, wait_selector="div.relative.grid.bg-white"):
+        """
+        بارگذاری کامل صفحه Utravs با اسکرول تا زمانی که همه‌ی پروازها لود شوند.
+        """
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=self.HEADLESS,
+                args=["--disable-blink-features=AutomationControlled"]
+            )
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+                )
+            )
+            page = await context.new_page()
+            await page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+  
+            await page.goto(url, timeout=120000)
+
+            # منتظر اولین کارت
+            try:
+                await page.wait_for_selector(wait_selector, timeout=25000)
+            except:
+                print("⚠️ کارت‌ها در بارگذاری اولیه پیدا نشدن — تلاش برای اسکرول...")
+
+            html = await page.content()
+            await browser.close()
+            
+            return html
+
+    def parse_flights(self, html):
+        """
+        پارس HTML پروازهای Utravs
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        cards = soup.select("div.relative.grid.bg-white")
+        flights = []
+        print(f"✅ Ultravs Cards Found: {len(cards)}")
+
+        for c in cards:
+            try:
+                # ✈️ ایرلاین
+                airline_tag = c.select_one("span.font-medium.text-md")
+                airline = airline_tag.get_text(strip=True) if airline_tag else None
+
+                # 🕐 زمان رفت و برگشت
+                time_tags = c.select("strong.font-bold.text-base")
+                dep_time = persian_to_latin_digits(time_tags[0].get_text(strip=True)) if len(time_tags) > 0 else None
+                arr_time = persian_to_latin_digits(time_tags[1].get_text(strip=True)) if len(time_tags) > 1 else None
+
+                # 🕐 زمان رفت و برگشت
+                time_tags = c.select("strong.font-bold.text-base")
+                dep_time = persian_to_latin_digits(time_tags[0].get_text(strip=True)) if len(time_tags) > 0 else None
+                arr_time = persian_to_latin_digits(time_tags[1].get_text(strip=True)) if len(time_tags) > 1 else None
+
+                # 🌆 مبدا و مقصد
+                city_tags = c.select("div.flex.justify-between.items-start span")
+                origin_airport = city_tags[0].get_text(strip=True) if len(city_tags) > 0 else None
+                dest_airport = city_tags[1].get_text(strip=True) if len(city_tags) > 1 else None
+
+                # 🎟️ کلاس پرواز
+                # 🎟️ کلاس پرواز — فقط اگر واقعاً "بیزینس" نوشته شده
+                class_tag = c.find(string=lambda s: s and ("بیزینس" in s or "بیزنس" in s))
+                aircraft_class = "بیزینس" if class_tag else "اکونومی"
+
+                # 💰 قیمت
+                price_tag = c.select_one("strong.font-bold.text-lg, strong.font-bold.text-xl")
+                price = None
+                if price_tag:
+                    txt = persian_to_latin_digits(price_tag.get_text(strip=True))
+                    txt = re.sub(r"[^\d]", "", txt)
+                    if txt.isdigit():
+                        price = int(txt)
+
+                if airline and price and dep_time:
+                    flights.append({
+                        "airline": airline,
+                        "aircraft_class": aircraft_class,
+                        "departure_time": dep_time,
+                        "arrival_time": arr_time,
+                        "origin_airport": origin_airport,
+                        "destination_airport": dest_airport,
+                        "price": price
+                    })
+            except Exception as e:
+                print(f"⚠️ خطا در کارت Ultravs:", e)
+                continue
+
+        print(f"🛫 Flights Parsed Successfully: {len(flights)}")
+        return flights
 
 
 # --------------------------
@@ -1272,7 +1386,8 @@ async def main():
         #MrBilitPipeline(),
         #FlytodayPipeline()  # ✅ اضافه شده
         #SnappTripPipeline()
-        EligashtPipeline()
+        #EligashtPipeline()
+        UltravsPipeline()
     ]
 
     for pipeline in pipelines:
@@ -1308,6 +1423,11 @@ async def main():
              print(f"🔗 Eligasht URL: {url}")
              flights = await pipeline.fetch_and_parse(url, date_shamsi=date_shamsi)
 
+        elif isinstance(pipeline, UltravsPipeline):
+            url = pipeline.build_url(origin_city, dest_city, date_gregorian, passengers, intl)
+            print(f"🔗 Ultravs: {url}")
+            html = await pipeline.fetch_html(url)
+            flights = pipeline.parse_flights(html)
                 
         else:
             # Charter118 و Flightio
