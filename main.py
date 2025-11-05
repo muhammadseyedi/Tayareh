@@ -1379,14 +1379,14 @@ async def main():
 
     # 🔴 لیست pipeline ها
     pipelines = [
-        #AlibabaPipeline(),
-        #GhasedakPipeline(),
-        #Charter118Pipeline(),
-        #FlightioPipeline(),
-        #MrBilitPipeline(),
-        #FlytodayPipeline()  # ✅ اضافه شده
-        #SnappTripPipeline()
-        #EligashtPipeline()
+        AlibabaPipeline(),
+        GhasedakPipeline(),
+        Charter118Pipeline(),
+        FlightioPipeline(),
+        MrBilitPipeline(),
+        FlytodayPipeline(), 
+        SnappTripPipeline(),
+        EligashtPipeline(),
         UltravsPipeline()
     ]
 
@@ -1414,9 +1414,7 @@ async def main():
             html = await pipeline.fetch_html(url)
             flights = pipeline.parse_flights(html)
             
-        elif isinstance(pipeline, TripPipeline):
-            url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
-            flights = await pipeline.fetch_and_parse(url)
+
             
         elif isinstance(pipeline, EligashtPipeline):
              url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
