@@ -901,6 +901,7 @@ class FlytodayPipeline(PipelineBase):
     def parse_flights(self, html):
         """این متد دیگه استفاده نمیشه - fetch_and_parse رو استفاده می‌کنیم"""
         pass
+
 # --------------------------
 # snapp
 # --------------------------
@@ -985,7 +986,7 @@ class SnappTripPipeline(PipelineBase):
                 dep_airport_tag = card.find("div", {"data-testid": "solution-departure-airport"})
                 arr_airport_tag = card.find("div", {"data-testid": "solution-arrival-airport"})
                 airline_tag = card.find("span", {"data-testid": "solution-airline-name"})
-                cabin_tag = card.find("span", string=lambda s: s and ("اکونومی" in s or "بیزینس" in s))
+                cabin_tag = card.find("span", string=lambda s: s and ("اکونومی" in s or "بیزینس" in s or "بیزنس" in s))
                 price_tag = card.find("div", {"data-testid": "solution-price"})
     
                 dep_time = persian_to_latin_digits(dep_time_tag.get_text(strip=True)) if dep_time_tag else None
@@ -1019,7 +1020,229 @@ class SnappTripPipeline(PipelineBase):
     
         return flights
 
-    
+#------------------------------
+#eligasht
+#------------------------------
+
+class EligashtPipeline(PipelineBase):
+    def __init__(self):
+        super().__init__("Eligasht", "Flights_Eligasht")
+        self.price_column = "price_eligasht"
+        # سایت eligasht ممکنه js-heavy باشه — در صورت تشخیص bot-blocking می‌تونی HEADLESS = False کنی
+        self.HEADLESS = True
+
+    def build_url(self, origin_iata, dest_iata, date_gregorian, passengers, international=False):
+        """
+        الگوی URL مشابه مثالی که دادی:
+        https://www.eligasht.com/flights/mashhad?trip=THR-MHD-2025-11-11&Adult=1&Child=0&Infant=0&FlightClass=Economy
+        برای ساخت آدرس از dest_iata یا نام مقصد در مسیر استفاده می‌کنیم (dest_iata یا dest_name را lowercase کن).
+        """
+        dest_segment = dest_iata.lower()
+        return (
+            f"https://www.eligasht.com/flights/{dest_segment}"
+            f"?trip={origin_iata}-{dest_iata}-{date_gregorian}&Adult={passengers}&Child=0&Infant=0&FlightClass=Economy"
+        )
+
+    async def fetch_html(self, url, wait_selector="li[data-id]"):
+        """
+        دانلود html با playwright؛ کمی اسکرول می‌کنیم تا کارت‌ها بارگذاری شوند.
+        """
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=self.HEADLESS)
+            context = await browser.new_context(user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ))
+            page = await context.new_page()
+            try:
+                await page.goto(url, timeout=120000, wait_until="domcontentloaded")
+            except Exception as e:
+                print("⚠️ خطا در باز کردن صفحه eligasht:", e)
+
+            # اگر selector موجود شد، منتظرش بمون؛ اگر نه، باز هم تلاش می‌کنیم با اسکرول بارگذاری کنیم
+            try:
+                await page.wait_for_selector(wait_selector, timeout=15000)
+            except Exception:
+                # اسکرول برای بارگذاری موارد lazy
+                for _ in range(6):
+                    await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+                    await asyncio.sleep(0.8)
+
+            # کوتاه صبر کن تا JS کامل بشه
+            await asyncio.sleep(1.2)
+            html = await page.content()
+            await browser.close()
+            return html
+
+    def _normalize_price(self, text):
+        if not text:
+            return None
+        digits = re.sub(r"[^\d]", "", text)
+        return int(digits) if digits else None
+
+    def parse_flights(self, html):
+        """
+        استخراج پروازها از HTML صفحه eligasht
+        خروجی: لیست دیکشنری‌هایی با کلیدهای مشابه pipeline های قبلی:
+          - flightNumber (یا flight_number)
+          - priceAdult (یا price)
+          - airlineName (یا airline)
+          - classTypeName (یا aircraft_class)
+          - leaveDateTime (یا departure_time)
+          - arrivalDateTime (یا arrival_time)
+          - originName, destinationName (در صورت پیدا شدن)
+          - tarikh_shamsi (در صورت ست شدن در فراخوان)
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        flights = []
+
+        # انتخاب لی با data-id (در مثال شما li دارای data-id بود)
+        items = soup.find_all("li", attrs={"data-id": True})
+        if not items:
+            # fallback: جستجوی لی‌هایی که کلاسِ کارت پرواز دارند (اگر تغییر نام کلاس)
+            items = soup.find_all("li")
+
+        for li in items:
+            try:
+                # برای اطمینان از اینکه این لی کارتِ پروازِ eligasht هست، بررسی می‌کنیم که بخش content موجود باشه
+                if not li.find(class_=lambda c: c and "resultFlight_ticket_flight_main_list_content" in c):
+                    # ممکنه لی مربوط به چیز دیگه باشه => skip
+                    continue
+
+                # ایرلاین: اول تلاش می‌کنیم تگ <b> داخل بلاک airline_name را برداریم
+                airline = None
+                airline_tag = li.find("div", class_=lambda c: c and "resultFlight_ticket_flight_main_list_content_box_airline_name" in c)
+                if airline_tag:
+                    airline = airline_tag.get_text(strip=True)
+                # fallback: تصویر alt
+                if not airline:
+                    img = li.find("img", alt=True)
+                    if img:
+                        airline = img.get("alt").strip()
+
+                # زمان حرکت و رسیدن: اولین و دومین المنت با کلاس times_span
+                time_spans = li.find_all("div", class_=lambda c: c and "resultFlight_ticket_flight_main_list_content_times_span" in c) \
+                             or li.find_all("div", string=re.compile(r"\d{1,2}:\d{2}"))
+                dep_time = None
+                arr_time = None
+                if time_spans and len(time_spans) >= 1:
+                    dep_time = time_spans[0].get_text(strip=True)
+                # در ساختار نمونه، دو تا از این المنت‌ها وجود دارند؛ دوم یکی برای ورود است
+                # اما گاهی عناصر با span و aria-label هستند:
+                # بررسی صریح‌تر: جستجوی div هایی که aria-label "ساعت پرواز" یا "زمان ورود" دارن
+                dep_label = li.find(attrs={"aria-label": "ساعت پرواز"})
+                if dep_label:
+                    dep_time = dep_label.get_text(strip=True)
+                arr_label = li.find(attrs={"aria-label": "زمان ورود"})
+                if arr_label:
+                    arr_time = arr_label.get_text(strip=True)
+                # اگر هنوز arr_time پیدا نشد: پیدا کن دومین زمان تکراری
+                if not arr_time:
+                    # جستجوی تمام متن‌هایی که شبیه HH:MM هستند در داخل لی
+                    times_found = re.findall(r"(\d{1,2}:\d{2})", li.get_text())
+                    if len(times_found) >= 2:
+                        dep_time, arr_time = times_found[0], times_found[1]
+                    elif len(times_found) == 1 and not dep_time:
+                        dep_time = times_found[0]
+
+                # مبدأ و مقصد: تلاش برای خواندن از aria-label های مربوط به فرودگاه
+                origin_name = None
+                dest_name = None
+                origin_span = li.find(attrs={"aria-label": re.compile(r"فرودگاه.*")})
+                # ممکنه چندتا aria-label وجود داشته باشه؛ جمع‌آوری همه و تفکیک بر اساس متن داخل پرانتز
+                aria_spans = li.find_all("span", attrs={"class": lambda c: c and "resultFlight_ticket_flight_main_list_content_times_sub" in c})
+                for sp in aria_spans:
+                    text = sp.get_text(" ", strip=True)
+                    # مثال: "تهران (THR)" یا "مشهد (MHD)"
+                    if "(" in text and ")" in text:
+                        if "تهران" in text or "THR" in text or "IKA" in text:
+                            if not origin_name:
+                                origin_name = text
+                        else:
+                            if not dest_name:
+                                dest_name = text
+                # fallback: گرفتن هر span که داخلش پرانتز (کد IATA) باشه
+                if not origin_name or not dest_name:
+                    paren_spans = re.findall(r"([^\n(]{1,40}\(\s*[A-Z]{2,4}\s*\))", li.get_text())
+                    if paren_spans:
+                        if not origin_name and len(paren_spans) >= 1:
+                            origin_name = paren_spans[0].strip()
+                        if not dest_name and len(paren_spans) >= 2:
+                            dest_name = paren_spans[1].strip()
+
+                # شماره پرواز: در footer آمده "شماره پرواز:  024"
+                flight_no = None
+                footer_text = li.get_text(" ", strip=True)
+                m_fno = re.search(r"شماره پرواز[:\s]*([A-Za-z0-9\-]+)", footer_text)
+                if m_fno:
+                    flight_no = m_fno.group(1).strip()
+                # fallback: جستجوی patterns لاتین/digits
+                if not flight_no:
+                    m = re.search(r"Flight\s*No\.?\s*[:\-]?\s*([A-Za-z0-9]+)", footer_text, re.IGNORECASE)
+                    if m:
+                        flight_no = m.group(1).strip()
+
+                # نوع هواپیما / کلاس پرواز (کلاس پرواز دقیق ممکنه ذکر نشده باشه)
+                # کلاس پرواز (اکونومی / بیزینس)
+                aircraft_class = "اکونومی"
+                
+                text_all = li.get_text(" ", strip=True)
+                
+                if re.search(r"اکونومی|اقتصادی|economy", text_all, re.IGNORECASE):
+                    aircraft_class = "اکونومی"
+                elif re.search(r"بیزینس|business", text_all, re.IGNORECASE):
+                    aircraft_class = "بیزینس"
+
+
+                # قیمت: تگ <b class="...price...">4,498,000</b>
+                price = None
+                price_tag = li.find("b", class_=lambda c: c and "resultFlight_ticket_flight_main_list_footer_left_price" in c)
+                if price_tag:
+                    price = self._normalize_price(price_tag.get_text())
+                else:
+                    # fallback: پیدا کردن اولین عدد بزرگ در متن Footer
+                    mprice = re.search(r"(\d{1,3}(?:[,\u066C\u066B]\d{3})+|\d{6,})", footer_text)
+                    if mprice:
+                        price = self._normalize_price(mprice.group(0))
+
+                # ممکنه پرواز چارتر/سیستمی ذکر شده باشه
+                is_charter = "چارتری" in footer_text
+
+                # assemble dict با کلیدهای همسان‌شده با PipelineBase
+                if price and airline and dep_time:
+                    flights.append({
+                        "flightNumber": flight_no,
+                        "priceAdult": price,
+                        "airlineName": airline,
+                        "classTypeName": aircraft_class,
+                        "leaveDateTime": dep_time,
+                        "arrivalDateTime": arr_time,
+                        "departure_city": origin_name,
+                        "arrival_city": dest_name,
+                        "is_charter": is_charter,
+                        # tarikh_shamsi رو در main هنگام فراخوان می‌افزاییم یا اینجا None قرار می‌دیم
+                        "tarikh_shamsi": None
+                    })
+            except Exception as e:
+                # خطا در پردازش یکی از کارت‌ها نباید pipeline رو متوقف کنه
+                print("⚠️ خطا در parse کارت eligasht:", e)
+                continue
+
+        print(f"✅ {len(flights)} پرواز از Eligasht استخراج شد.")
+        return flights
+
+    async def fetch_and_parse(self, url, date_shamsi=None):
+        html = await self.fetch_html(url, wait_selector="li[data-id]")
+        flights = self.parse_flights(html)
+        # اگر تاریخ شمسی داده شده، به فیلد tarikh_shamsi اضافه کن
+        if date_shamsi:
+            for f in flights:
+                f["tarikh_shamsi"] = date_shamsi
+        return flights
+
+
+
+
 
 # --------------------------
 # 🔧 تغییرات لازم در main()
@@ -1047,8 +1270,9 @@ async def main():
         #Charter118Pipeline(),
         #FlightioPipeline(),
         #MrBilitPipeline(),
-        FlytodayPipeline(),
-        SnappTripPipeline()  # ✅ اضافه شده
+        #FlytodayPipeline()  # ✅ اضافه شده
+        #SnappTripPipeline()
+        EligashtPipeline()
     ]
 
     for pipeline in pipelines:
@@ -1074,7 +1298,17 @@ async def main():
             url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
             html = await pipeline.fetch_html(url)
             flights = pipeline.parse_flights(html)
-        
+            
+        elif isinstance(pipeline, TripPipeline):
+            url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
+            flights = await pipeline.fetch_and_parse(url)
+            
+        elif isinstance(pipeline, EligashtPipeline):
+             url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
+             print(f"🔗 Eligasht URL: {url}")
+             flights = await pipeline.fetch_and_parse(url, date_shamsi=date_shamsi)
+
+                
         else:
             # Charter118 و Flightio
             url = pipeline.build_url(origin_iata, dest_iata, date_gregorian, passengers, intl)
@@ -1092,4 +1326,4 @@ async def main():
 
 
 if __name__ == "__main__":
-     asyncio.run(main())
+     asyncio.run (main())
