@@ -902,8 +902,125 @@ class FlytodayPipeline(PipelineBase):
         """این متد دیگه استفاده نمیشه - fetch_and_parse رو استفاده می‌کنیم"""
         pass
 # --------------------------
-# اجرای Pipeline
+# snapp
 # --------------------------
+def persian_to_latin_digits(s: str) -> str:
+    if not s:
+        return s
+    PERSIAN_DIGITS = {
+        '۰': '0','۱': '1','۲': '2','۳': '3','۴': '4','۵': '5','۶': '6','۷': '7','۸': '8','۹': '9',
+        '٠': '0','١': '1','٢': '2','٣': '3','٤': '4','٥': '5','٦': '6','٧': '7','٨': '8','٩': '9'
+    }
+    return ''.join(PERSIAN_DIGITS.get(ch, ch) for ch in s)
+
+
+class SnappTripPipeline(PipelineBase):
+    def __init__(self):
+        super().__init__("SnappTrip", "Flights_SnappTrip")
+        self.price_column = "price_snapptrip"
+        self.HEADLESS = True  # False برای تست
+
+    def build_url(self, origin_iata, dest_iata, date_jalali, passengers, international=False):
+        return (
+            f"https://www.snapptrip.com/flights/{origin_iata}_city/{dest_iata}_city"
+            f"?adultCount={passengers}&childCount=0&infantCount=0"
+            f"&cabinType=ECONOMY&dateType=jalali&departureDate={date_jalali}"
+            f"&tripType=oneway&originCode={origin_iata}&destinationCode={dest_iata}"
+        )
+
+    async def fetch_html(self, url, wait_selector="article[data-testid='solution-card']"):
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=self.HEADLESS, 
+                args=["--disable-blink-features=AutomationControlled"]
+            )
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+            )
+            page = await context.new_page()
+            await page.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+
+            print(f"🌍 Loading SnappTrip: {url}")
+            await page.goto(url, timeout=120000)
+
+            # صبر برای کارت‌ها
+            try:
+                await page.wait_for_selector(wait_selector, timeout=15000)
+            except:
+                print("⚠️ کارت‌ها پیدا نشدن — اسکرول می‌زنم")
+
+            # scroll + کلیک روی "مشاهده بیشتر" تا آخر
+            more_selector = "button.button.round.md.secondary.outline"
+            for _ in range(20):  # حداکثر 20 بار برای بارگذاری تمام پروازها
+                try:
+                    btn = await page.query_selector(more_selector)
+                    if btn:
+                        await btn.click()
+                        await asyncio.sleep(1.0)
+                    else:
+                        break
+                except:
+                    break
+                # scroll کمی پایین
+                await page.evaluate("window.scrollBy(0, document.body.scrollHeight)")
+                await asyncio.sleep(0.5)
+
+            html = await page.content()
+            await browser.close()
+            return html
+
+    def parse_flights(self, html):
+        soup = BeautifulSoup(html, "html.parser")
+        cards = soup.find_all("article", {"data-testid": "solution-card"})
+    
+        flights = []
+        print(f"✅ SnappTrip Cards Found: {len(cards)}")
+    
+        for card in cards:
+            try:
+                dep_time_tag = card.find("div", {"data-testid": "solution-departure-time"})
+                arr_time_tag = card.find("div", {"data-testid": "solution-arrival-time"})
+                dep_airport_tag = card.find("div", {"data-testid": "solution-departure-airport"})
+                arr_airport_tag = card.find("div", {"data-testid": "solution-arrival-airport"})
+                airline_tag = card.find("span", {"data-testid": "solution-airline-name"})
+                cabin_tag = card.find("span", string=lambda s: s and ("اکونومی" in s or "بیزینس" in s))
+                price_tag = card.find("div", {"data-testid": "solution-price"})
+    
+                dep_time = persian_to_latin_digits(dep_time_tag.get_text(strip=True)) if dep_time_tag else None
+                arr_time = persian_to_latin_digits(arr_time_tag.get_text(strip=True)) if arr_time_tag else None
+                dep_airport = dep_airport_tag.get_text(strip=True) if dep_airport_tag else None
+                arr_airport = arr_airport_tag.get_text(strip=True) if arr_airport_tag else None
+                airline = airline_tag.get_text(strip=True) if airline_tag else None
+                cabin = cabin_tag.get_text(strip=True) if cabin_tag else None
+    
+                price = None
+                if price_tag:
+                    price_clean = re.sub(r"[^\d]", "", price_tag.get_text(strip=True))
+                    price = int(price_clean) if price_clean else None
+
+                if not price:
+                    continue
+
+                flights.append({
+                    "departure_time": dep_time,
+                    "arrival_time": arr_time,
+                    "origin_airport": dep_airport,
+                    "destination_airport": arr_airport,
+                    "airline": airline,
+                    "aircraft_class": cabin,
+                    "price": price
+                })
+    
+            except Exception as e:
+                print("⚠️ Error parsing SnappTrip card", e)
+                continue
+    
+        return flights
+
+    
+
 # --------------------------
 # 🔧 تغییرات لازم در main()
 # --------------------------
@@ -930,7 +1047,8 @@ async def main():
         #Charter118Pipeline(),
         #FlightioPipeline(),
         #MrBilitPipeline(),
-        FlytodayPipeline()  # ✅ اضافه شده
+        FlytodayPipeline(),
+        SnappTripPipeline()  # ✅ اضافه شده
     ]
 
     for pipeline in pipelines:
