@@ -153,50 +153,112 @@ class PipelineBase:
 
                 # 🧩 نرمال‌سازی نام ایرلاین‌ها (همسان‌سازی حالت‌های مختلف)
                 AIRLINE_MAP = {
+                    # ماهان
                     "ماهان": "ماهان",
+                    "ماهان ایر": "ماهان",
                     "Mahan Air": "ماهان",
                     "mahan": "ماهان",
+                    "Mahan": "ماهان",
+
+                    # آتا
                     "آتا": "آتا",
                     "ATA": "آتا",
                     "Ata Airlines": "آتا",
                     "ATA Airlines": "آتا",
                     "آتا ایر": "آتا",
+                    "Ata": "آتا",
+
+                    # چابهار
                     "چابهار": "چابهار",
-                    "Chabahar Air": "چابهار",
                     "Chabahar": "چابهار",
+                    "Chabahar Air": "چابهار",
+                    "Chabahar Airlines": "چابهار",
+
+                    # ساها
                     "ساها": "ساها",
                     "Saha": "ساها",
                     "Saha Air": "ساها",
                     "ساها ایر": "ساها",
+
+                    # نسیم ایر
                     "نسیم ایر": "نسیم ایر",
                     "نسيم اير": "نسیم ایر",
                     "Nasim Air": "نسیم ایر",
+                    "Nasim Airlines": "نسیم ایر",
+
+                    # ایران ایر
                     "ایران ایر": "ایران ایر",
                     "Iran Air": "ایران ایر",
+
+                    # ایران ایرتور
+                    "ایران ایرتور": "ایران ایرتور",
+                    "ایران ایر تور": "ایران ایرتور",
+                    "Iran Air Tours": "ایران ایرتور",
+                    "Iran Airtour": "ایران ایرتور",
+                    "Iran Airtours": "ایران ایرتور",
+
+                    # قشم ایر
+                    "قشم ایر": "قشم ایر",
+                    "Qeshm Air": "قشم ایر",
+                    "Qeshm Airlines": "قشم ایر",
+                    "Qeshm": "قشم ایر",
+
+                    # آسمان
+                    "آسمان": "آسمان",
+                    "Iran Aseman Airlines": "آسمان",
+                    "Aseman Airlines": "آسمان",
+                    "Aseman": "آسمان",
+
+                    # آوا ایر
+                    "آوا ایر": "آوا ایر",
+                    "آوا": "آوا ایر",
+                    "Ava Air": "آوا ایر",
+                    "Ava Airlines": "آوا ایر",
+
+                    # اروند
+                    "اروان": "اروان",
+                    "اروان ایرلاین": "اروان",
+                    "Ervan": "اروان",
+                    "Ervan Air": "اروان",
+                    "Ervan Airlines": "اروان",
+
+                    # زاگرس
                     "زاگرس": "زاگرس",
+                    "Zagros": "زاگرس",
                     "Zagros Airlines": "زاگرس",
+
+                    # کاسپین
                     "کاسپین": "کاسپین",
+                    "Caspian": "کاسپین",
                     "Caspian Airlines": "کاسپین",
+
+                    # فلای کیش
                     "فلای کیش": "فلای کیش",
                     "Fly Kish": "فلای کیش",
                     "FlyKish": "فلای کیش",
-                    "آوا ایر": "آوا ایر",
-                    "Ava Air": "آوا ایر",
-                    "ایران ایرتور": "ایران ایرتور",
-                    "ایران ایرتور": "ایران ایر تور",
-                    "Iran Air Tours": "ایران ایرتور",
+                    "Flykish Airlines": "فلای کیش",
+
+                    # کیش ایر
                     "کیش ایر": "کیش ایر",
                     "Kish Airlines": "کیش ایر",
+                    "Kish Air": "کیش ایر",
+
+                    # اطلس ایر
                     "اطلس ایر": "اطلس ایر",
                     "اطلس اير": "اطلس ایر",
                     "Atlas Air": "اطلس ایر",
                     "Atlas Airline": "اطلس ایر",
+                    "Atlas Airlines": "اطلس ایر",
+
+                    # تابان
                     "تابان": "تابان",
                     "Taban Air": "تابان",
                     "Taban Airlines": "تابان",
+
+                    # وارش
                     "وارش": "وارش",
-                    "Varesh Airlines": "وارش",
                     "Varesh": "وارش",
+                    "Varesh Airlines": "وارش",
                 }
 
                 airline = airline.strip()
@@ -211,6 +273,11 @@ class PipelineBase:
                     or f.get("aircraft_class")
                     or None
                 )
+                if aircraft_class:
+                    if "بیزنس" in aircraft_class or "بیزینس" in aircraft_class:
+                        aircraft_class = "بیزینس"
+                    elif "اکونومی" in aircraft_class:
+                        aircraft_class = "اکونومی"
 
                 # قیمت ممکن است رشته یا عدد باشد؛ سعی کنیم int بگیریم
                 raw_price = f.get("priceAdult") or f.get("price") or f.get("price_adult") or None
@@ -242,25 +309,24 @@ class PipelineBase:
                         SELECT id, {self.price_column}
                         FROM Flights_AllSites
                         WHERE origin_name=? AND dest_name=? AND departure_date=?
-                          AND departure_time=? AND arrival_time=? AND airline=? AND aircraft_class=?
-                    """, (origin_city, dest_city, date_shamsi, dep_time, arr_time, airline, aircraft_class))
+                        AND departure_time=? AND airline=? AND aircraft_class=?
+
+                    """, (origin_city, dest_city, date_shamsi, dep_time,  airline, aircraft_class))
                     row = cursor.fetchone()
                 else:
                     row = None
 
                 if row:
                     existing_price = row[1]
-                    # تبدیل existing_price به int در صورت نیاز
                     if isinstance(existing_price, str):
                         ep_digits = re.sub(r"[^\d]", "", existing_price)
                         existing_price = int(ep_digits) if ep_digits else None
-                    # حالا مقایسه امن
                     if existing_price is None or price < existing_price:
                         cursor.execute(f"""
                             UPDATE Flights_AllSites
-                            SET {self.price_column} = ?, airline = ?, aircraft_class = ?
+                            SET {self.price_column} = ?, airline = ?, aircraft_class = ?, arrival_time = ?
                             WHERE id = ?
-                        """, (price, airline, aircraft_class, row[0]))
+                        """, (price, airline, aircraft_class, arr_time, row[0]))
                         updated += 1
                     else:
                         # قیمت جدید بالاتر یا برابر است -> کاری انجام نمیدیم
@@ -995,7 +1061,11 @@ class SnappTripPipeline(PipelineBase):
                 arr_airport = arr_airport_tag.get_text(strip=True) if arr_airport_tag else None
                 airline = airline_tag.get_text(strip=True) if airline_tag else None
                 cabin = cabin_tag.get_text(strip=True) if cabin_tag else None
-    
+                if cabin:
+                    if "بیزنس" in cabin or "بیزینس" in cabin:
+                        cabin = "بیزینس"
+                    elif "اکونومی" in cabin:
+                        cabin = "اکونومی"
                 price = None
                 if price_tag:
                     price_clean = re.sub(r"[^\d]", "", price_tag.get_text(strip=True))
