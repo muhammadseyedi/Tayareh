@@ -60,15 +60,15 @@ async def run_scraper(origin_city: str = None, dest_city: str = None,
     
     # لیست تمام pipeline ها
     pipelines = [
-        #AlibabaPipeline(),
-        #Charter118Pipeline(),
-        #FlightioPipeline(),
-        #MrBilitPipeline(),
-        #GhasedakPipeline(),
+        AlibabaPipeline(),
+        Charter118Pipeline(),
+        FlightioPipeline(),
+        MrBilitPipeline(),
+        GhasedakPipeline(),
         FlytodayPipeline(),
-        #SnappTripPipeline(),
-        #EligashtPipeline(),
-        #UltravsPipeline()
+        SnappTripPipeline(),
+        EligashtPipeline(),
+        UltravsPipeline()
     ]
     
     # اجرای هر pipeline

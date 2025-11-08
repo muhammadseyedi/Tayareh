@@ -128,10 +128,11 @@ class DatabaseManager:
             cursor.execute(f"SELECT COUNT(*) FROM {self.table}")
             stats['total_flights'] = cursor.fetchone()[0]
             
-            # تعداد پروازهای آینده
+            # تعداد پروازهای آینده (چون تاریخ شمسی است، همه را می‌شماریم)
+            # یا می‌توانید با تبدیل تاریخ شمسی به میلادی این کار را انجام دهید
             cursor.execute(f"""
                 SELECT COUNT(*) FROM {self.table}
-                WHERE departure_date >= CONVERT(DATE, GETDATE())
+                WHERE departure_date IS NOT NULL AND departure_date != ''
             """)
             stats['future_flights'] = cursor.fetchone()[0]
             
@@ -163,7 +164,7 @@ class DatabaseManager:
                 cursor.execute(f"""
                     SELECT AVG(CAST({col} AS FLOAT))
                     FROM {self.table}
-                    WHERE {col} > 0 AND departure_date >= CONVERT(DATE, GETDATE())
+                    WHERE {col} > 0
                 """)
                 result = cursor.fetchone()[0]
                 stats['avg_prices'][col] = int(result) if result else 0
