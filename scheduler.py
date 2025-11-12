@@ -33,7 +33,7 @@ def start_scheduler():
     job()
     
     # زمان‌بندی هر 30 دقیقه
-    schedule.every(30).minutes.do(job)
+    schedule.every(3).minutes.do(job)
     
     # حلقه اجرا
     try:
