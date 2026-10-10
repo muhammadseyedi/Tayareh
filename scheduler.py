@@ -1,47 +1,49 @@
-"""
-زمان‌بند برای اجرای خودکار جمع‌آوری اطلاعات هر 30 دقیقه
-"""
+"""زمان‌بند اجرای خودکار جمع‌آوری اطلاعات پروازها."""
 import asyncio
 import schedule
 import time
 from datetime import datetime
+
+from config import SCHEDULE_CONFIG
 from main import run_scraper
 
 
 def job():
-    """تابعی که هر 30 دقیقه اجرا می‌شود"""
-    print(f"\n{'='*60}")
+    """Run one collection cycle."""
+    print(f"\n{'=' * 60}")
     print(f"⏰ شروع جمع‌آوری اطلاعات - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*60}\n")
-    
+    print(f"{'=' * 60}\n")
+
     try:
-        # اجرای async scraper
+        # run_scraper currently visits pipelines sequentially.
         asyncio.run(run_scraper())
-        print(f"\n✅ جمع‌آوری با موفقیت انجام شد")
-    except Exception as e:
-        print(f"\n❌ خطا در جمع‌آوری: {e}")
+        print("\n✅ جمع‌آوری با موفقیت انجام شد")
+    except Exception as exc:
+        print(f"\n❌ خطا در جمع‌آوری: {exc}")
 
 
 def start_scheduler():
-    """شروع زمان‌بند"""
+    """Run once immediately, then repeat using SCHEDULE_CONFIG."""
+    interval = int(SCHEDULE_CONFIG.get("run_every_minutes", 30))
+    if interval < 1:
+        raise ValueError("SCHEDULE_CONFIG['run_every_minutes'] must be at least 1")
+
     print("🚀 زمان‌بند راه‌اندازی شد")
-    print("⏰ جمع‌آوری اطلاعات هر 30 دقیقه انجام می‌شود")
-    print("⌨️  برای توقف Ctrl+C بزنید\n")
-    
-    # اجرای فوری اولیه
+    print(f"⏰ اجرای بعدی هر {interval} دقیقه انجام می‌شود")
+    print("⌨️ برای توقف Ctrl+C بزنید\n")
+
+    # Execute an initial run before entering the scheduling loop.
     print("🔄 اجرای اولیه...")
     job()
-    
-    # زمان‌بندی هر 30 دقیقه
-    schedule.every(3).minutes.do(job)
-    
-    # حلقه اجرا
+
+    schedule.every(interval).minutes.do(job)
+
     try:
         while True:
             schedule.run_pending()
-            time.sleep(60)  # هر 60 ثانیه یکبار چک کن
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("\n\n⏹️  زمان‌بند متوقف شد")
+        print("\n⏹️ زمان‌بند متوقف شد")
 
 
 if __name__ == "__main__":
