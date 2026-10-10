@@ -128,7 +128,7 @@ USER_AGENT = (
 # ⏰ تنظیمات Scheduler
 # --------------------------
 SCHEDULE_CONFIG = {
-    "run_every_minutes": 10,  # هر نیم ساعت
+    "run_every_minutes": 30,  # فاصله‌ی اجرای زمان‌بندی‌شده بر حسب دقیقه
     "first_run_delay": 5,     # تاخیر اولیه (ثانیه)
 }
 
