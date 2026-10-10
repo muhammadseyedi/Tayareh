@@ -32,6 +32,11 @@ def start_scheduler():
     print(f"⏰ اجرای بعدی هر {interval} دقیقه انجام می‌شود")
     print("⌨️ برای توقف Ctrl+C بزنید\n")
 
+    first_run_delay = max(0, int(SCHEDULE_CONFIG.get("first_run_delay", 0)))
+    if first_run_delay:
+        print(f"⏳ انتظار {first_run_delay} ثانیه پیش از اجرای اولیه...")
+        time.sleep(first_run_delay)
+
     # Execute an initial run before entering the scheduling loop.
     print("🔄 اجرای اولیه...")
     job()
