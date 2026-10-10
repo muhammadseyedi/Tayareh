@@ -179,80 +179,65 @@ class DatabaseManager:
             conn.close()
     
     def get_cheapest_flights(self, origin: str, dest: str, date: str, limit: int = 10):
-        """
-        دریافت ارزان‌ترین پروازها برای یک مسیر خاص
-        
-        Args:
-            origin: شهر مبدا
-            dest: شهر مقصد
-            date: تاریخ شمسی
-            limit: تعداد نتایج
-        
-        Returns:
-            لیست پروازها به ترتیب ارزانی
-        """
+        """Return flights ordered by the lowest positive price across all providers."""
+        # Keep the interpolated TOP value numeric and within a reasonable range.
+        limit = max(1, min(int(limit), 100))
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             query = f"""
                 SELECT TOP {limit}
-                    airline,
-                    aircraft_class,
-                    departure_time,
-                    arrival_time,
-                    COALESCE(
-                        NULLIF(price_alibaba, -1),
-                        NULLIF(price_charter118, -1),
-                        NULLIF(price_flightio, -1),
-                        NULLIF(price_mrbilit, -1),
-                        NULLIF(price_ghasedak, -1),
-                        NULLIF(price_flytoday, -1),
-                        NULLIF(price_snapptrip, -1),
-                        NULLIF(price_eligasht, -1),
-                        NULLIF(price_ultravs, -1)
-                    ) AS min_price
-                FROM {self.table}
-                WHERE 
-                    origin_name = ? 
-                    AND dest_name = ?
-                    AND departure_date = ?
-                    AND (
-                        price_alibaba > 0 OR
-                        price_charter118 > 0 OR
-                        price_flightio > 0 OR
-                        price_mrbilit > 0 OR
-                        price_ghasedak > 0 OR
-                        price_flytoday > 0 OR
-                        price_snapptrip > 0 OR
-                        price_eligasht > 0 OR
-                        price_ultravs > 0
-                    )
-                ORDER BY min_price ASC
+                    f.airline,
+                    f.aircraft_class,
+                    f.departure_time,
+                    f.arrival_time,
+                    cheapest.min_price
+                FROM {self.table} AS f
+                CROSS APPLY (
+                    SELECT MIN(v.price) AS min_price
+                    FROM (VALUES
+                        (NULLIF(f.price_alibaba, -1)),
+                        (NULLIF(f.price_charter118, -1)),
+                        (NULLIF(f.price_flightio, -1)),
+                        (NULLIF(f.price_mrbilit, -1)),
+                        (NULLIF(f.price_ghasedak, -1)),
+                        (NULLIF(f.price_flytoday, -1)),
+                        (NULLIF(f.price_snapptrip, -1)),
+                        (NULLIF(f.price_eligasht, -1)),
+                        (NULLIF(f.price_ultravs, -1))
+                    ) AS v(price)
+                    WHERE v.price > 0
+                ) AS cheapest
+                WHERE
+                    f.origin_name = ?
+                    AND f.dest_name = ?
+                    AND f.departure_date = ?
+                    AND cheapest.min_price IS NOT NULL
+                ORDER BY cheapest.min_price ASC
             """
-            
+
             cursor.execute(query, (origin, dest, date))
             rows = cursor.fetchall()
-            
-            flights = []
-            for row in rows:
-                flights.append({
-                    'airline': row[0],
-                    'aircraft_class': row[1],
-                    'departure_time': row[2],
-                    'arrival_time': row[3],
-                    'price': row[4]
-                })
-            
-            return flights
-            
+
+            return [
+                {
+                    "airline": row[0],
+                    "aircraft_class": row[1],
+                    "departure_time": row[2],
+                    "arrival_time": row[3],
+                    "price": row[4],
+                }
+                for row in rows
+            ]
+
         except Exception as e:
             logger.error(f"خطا در دریافت ارزان‌ترین پروازها: {e}")
             return []
         finally:
             cursor.close()
             conn.close()
-    
+
     def print_statistics(self):
         """چاپ آمار دیتابیس"""
         stats = self.get_statistics()
